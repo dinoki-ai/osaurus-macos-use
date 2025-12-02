@@ -1,0 +1,56 @@
+{
+  "plugin_id": "osaurus.macos-use",
+  "name": "macOS Use",
+  "description": "Control macOS applications via accessibility APIs - click, type, press keys, and traverse UI elements",
+  "homepage": "https://github.com/dinoki-ai/osaurus-macos-use",
+  "license": "MIT",
+  "authors": [
+    "dinoki-ai"
+  ],
+  "capabilities": {
+    "tools": [
+      {
+        "name": "open_application_and_traverse",
+        "description": "Opens or activates a specified application and then traverses its accessibility tree."
+      },
+      {
+        "name": "click_and_traverse",
+        "description": "Simulates a mouse click at specific coordinates within the window of the target application and then traverses its accessibility tree."
+      },
+      {
+        "name": "type_and_traverse",
+        "description": "Simulates typing text into the target application and then traverses its accessibility tree."
+      },
+      {
+        "name": "press_key_and_traverse",
+        "description": "Simulates pressing a specific keyboard key with optional modifier keys, then traverses the accessibility tree."
+      },
+      {
+        "name": "refresh_traversal",
+        "description": "Only performs the accessibility tree traversal for the specified application. Useful for getting the current UI state without performing an action."
+      }
+    ]
+  },
+  "public_keys": {
+    "minisign": "RWRh6pAWTUF1v3nbeg9mR/uXP+t+6F7H6t3IGops0j57Z1kPmOstbURj"
+  },
+  "versions": [
+    {
+      "version": "1.0.0",
+      "release_date": "2025-12-02",
+      "artifacts": [
+        {
+          "os": "macos",
+          "arch": "arm64",
+          "min_macos": "13.0",
+          "url": "https://github.com/dinoki-ai/osaurus-macos-use/releases/download/1.0.0/osaurus.macos-use-1.0.0.zip",
+          "sha256": "84f615256b017d6f3d2cbb7646501ef79670c5c7a228cfd06c89570af3b10ed2",
+          "size": 229854,
+          "minisign": {
+            "signature": "untrusted comment: signature from minisign secret key\nRWRh6pAWTUF1v68TJ6zeakLg0BJXhsbDLbanVbXRJemk4uY66/u3vkvcnvQHWKbbfreNkp7VhUW06mkXgy6JHy7QPv6L02X8Fgw=\ntrusted comment: timestamp:1764711136\tfile:osaurus.macos-use-1.0.0.zip\nUd0+zgUY9SofZfuSttocWLTkxB92mMK6OlcOFQpyzL/eOaKZXiXg0BZXKXwcB8TWaEMcKiw+Z/x5CxWaop84Cg=="
+          }
+        }
+      ]
+    }
+  ]
+}
