@@ -342,5 +342,4 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add release/
           git commit -m "Update registry entry for ${{ needs.build.outputs.version }}"
-          git push origin HEAD:main
-
+          git push origin HEAD:master
