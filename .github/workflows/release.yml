@@ -82,7 +82,7 @@ jobs:
           swift-version: "6.0"
 
       - name: Build Release
-        run: swift build -c release -Xswiftc -strict-concurrency=minimal
+        run: swift build -c release -Xswiftc -swift-version -Xswiftc 5
 
       - name: Import Code Signing Certificate
         id: codesign
