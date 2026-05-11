@@ -38,6 +38,7 @@ enum PluginManifest {
           },
           {
             "id": "list_apps",
+            "widget": true,
             "description": "List all running GUI apps (regular activation policy) with pid, name, bundleId, active, hidden. Use this before open_application when you want to attach to something already running without bringing it forward.",
             "parameters": { "type": "object", "properties": {} },
             "requirements": ["accessibility"],
@@ -45,6 +46,7 @@ enum PluginManifest {
           },
           {
             "id": "list_windows",
+            "widget": true,
             "description": "List all windows for a pid with their CGWindowID, title, focused/minimized flags, and bounds. Use the returned `windowId` with `take_screenshot` (windowId arg) and `get_ui_elements` (windowId arg via find_elements) to address one specific window without raising it.",
             "parameters": {
               "type": "object",
@@ -101,6 +103,7 @@ enum PluginManifest {
           },
           {
             "id": "get_active_window",
+            "widget": true,
             "description": "Returns the currently active window's pid, app name, title, and bounds. Useful when you don't yet have a pid and want to discover the foreground app.",
             "parameters": { "type": "object", "properties": {} },
             "requirements": ["accessibility"],
@@ -287,6 +290,7 @@ enum PluginManifest {
           },
           {
             "id": "list_displays",
+            "widget": true,
             "description": "List all connected displays with positions and dimensions.",
             "parameters": { "type": "object", "properties": {} },
             "requirements": ["accessibility"],
