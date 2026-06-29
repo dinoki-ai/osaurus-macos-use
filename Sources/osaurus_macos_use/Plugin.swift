@@ -4,28 +4,21 @@ import Foundation
 
 // MARK: - JSON Helpers
 
-private func jsonError(_ message: String) -> String {
-  let escaped =
-    message
-    .replacingOccurrences(of: "\\", with: "\\\\")
-    .replacingOccurrences(of: "\"", with: "\\\"")
-    .replacingOccurrences(of: "\n", with: "\\n")
-  return "{\"error\": \"\(escaped)\"}"
-}
-
 private func serializeResult<T: Encodable>(_ value: T) -> String {
   let encoder = JSONEncoder()
   encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
   do {
     let jsonData = try encoder.encode(value)
-    return String(data: jsonData, encoding: .utf8) ?? jsonError("Failed to encode result as UTF-8")
+    return String(data: jsonData, encoding: .utf8)
+      ?? Envelope.failure(.executionError, "Failed to encode result as UTF-8")
   } catch {
-    return jsonError("Failed to serialize result: \(error.localizedDescription)")
+    return Envelope.failure(
+      .executionError, "Failed to serialize result: \(error.localizedDescription)")
   }
 }
 
 /// Decode a tool's `Args` struct from a JSON string and run `body` with it,
-/// or return a structured error mentioning `expecting`.
+/// or return a canonical `invalid_args` failure mentioning `expecting`.
 private func withArgs<Args: Decodable>(
   _ args: String,
   expecting: String,
@@ -34,7 +27,7 @@ private func withArgs<Args: Decodable>(
   guard let data = args.data(using: .utf8),
     let input = try? JSONDecoder().decode(Args.self, from: data)
   else {
-    return jsonError("Invalid arguments: expected \(expecting)")
+    return Envelope.failure(.invalidArgs, "Invalid arguments: expected \(expecting)")
   }
   return body(input)
 }
@@ -118,7 +111,12 @@ private struct OpenApplicationTool: Tool {
       }
       switch opened {
       case .failure(let error):
-        return jsonError(error.message)
+        // "Application not found: ..." -> not_found; any other launch failure
+        // is a runtime execution error.
+        let kind: Envelope.Kind =
+          error.message.localizedCaseInsensitiveContains("not found")
+          ? .notFound : .executionError
+        return Envelope.failure(kind, error.message)
       case .success(let info):
         let mode = CaptureMode.parse(input.mode)
         let observe = input.observe ?? true
@@ -252,7 +250,7 @@ private struct GetActiveWindowTool: Tool {
     if let info = runOnMain({ getActiveWindow() }) {
       return serializeResult(info)
     }
-    return jsonError("No active window found")
+    return Envelope.failure(.notFound, "No active window found")
   }
 }
 
@@ -454,7 +452,8 @@ private struct ScrollTool: Tool {
       case "left": direction = .left
       case "right": direction = .right
       default:
-        return jsonError("Invalid direction: use 'up', 'down', 'left', or 'right'")
+        return Envelope.failure(
+          .invalidArgs, "Invalid direction: use 'up', 'down', 'left', or 'right'")
       }
       // When no pid is provided AND coords are given, position the cursor
       // first via the HID tap so the scroll lands on the right surface —
@@ -595,14 +594,16 @@ private struct ActAndObserveTool: Tool {
     guard let data = args.data(using: .utf8),
       let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     else {
-      return jsonError("Invalid arguments: expected JSON object")
+      return Envelope.failure(.invalidArgs, "Invalid arguments: expected JSON object")
     }
     guard let actionName = obj["action"] as? String else {
-      return jsonError(
+      return Envelope.failure(
+        .invalidArgs,
         "Missing 'action' field. Supported: \(Self.actions.keys.sorted().joined(separator: ", "))")
     }
     guard let tool = Self.actions[actionName] else {
-      return jsonError(
+      return Envelope.failure(
+        .invalidArgs,
         "Unsupported action '\(actionName)'. Supported: "
           + Self.actions.keys.sorted().joined(separator: ", "))
     }
@@ -844,10 +845,11 @@ nonisolated(unsafe) private var api: osr_plugin_api = {
     let payload = String(cString: payloadPtr)
 
     guard type == "tool" else {
-      return makeCString(jsonError("Unknown capability type: \(type)"))
+      return makeCString(
+        Envelope.failure(.invalidArgs, "Unknown capability type: \(type)"))
     }
     guard let tool = toolRegistry[id] else {
-      return makeCString(jsonError("Unknown tool: \(id)"))
+      return makeCString(Envelope.failure(.notFound, "Unknown tool: \(id)"))
     }
     return makeCString(tool.run(args: payload))
   }

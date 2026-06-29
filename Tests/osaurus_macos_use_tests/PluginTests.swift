@@ -253,7 +253,10 @@ struct InvokeRoutingTests {
 
     let result = invoke(api: api, ctx: ctx, tool: "nonexistent_tool", payload: "{}")
     let json = parseJSON(result)
-    #expect(json?["error"] as? String == "Unknown tool: nonexistent_tool")
+    #expect(json?["ok"] as? Bool == false)
+    #expect(json?["kind"] as? String == "not_found")
+    #expect(json?["message"] as? String == "Unknown tool: nonexistent_tool")
+    #expect(json?["retryable"] as? Bool == false)
   }
 
   @Test("Unknown capability type returns error")
@@ -273,7 +276,9 @@ struct InvokeRoutingTests {
     api.freeString!(resultPtr)
 
     let json = parseJSON(result)
-    #expect((json?["error"] as? String)?.contains("Unknown capability type") == true)
+    #expect(json?["ok"] as? Bool == false)
+    #expect(json?["kind"] as? String == "invalid_args")
+    #expect((json?["message"] as? String)?.contains("Unknown capability type") == true)
   }
 }
 
@@ -290,7 +295,7 @@ struct ArgumentValidationTests {
 
     let result = invoke(api: api, ctx: ctx, tool: "open_application", payload: "{}")
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("get_ui_elements rejects missing pid")
@@ -300,7 +305,7 @@ struct ArgumentValidationTests {
 
     let result = invoke(api: api, ctx: ctx, tool: "get_ui_elements", payload: "{}")
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("find_elements rejects missing pid")
@@ -310,7 +315,7 @@ struct ArgumentValidationTests {
 
     let result = invoke(api: api, ctx: ctx, tool: "find_elements", payload: #"{"text": "go"}"#)
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("click rejects missing coordinates")
@@ -320,7 +325,7 @@ struct ArgumentValidationTests {
 
     let result = invoke(api: api, ctx: ctx, tool: "click", payload: "{}")
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("click_element rejects missing id")
@@ -330,7 +335,7 @@ struct ArgumentValidationTests {
 
     let result = invoke(api: api, ctx: ctx, tool: "click_element", payload: "{}")
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("type_text rejects missing text")
@@ -340,7 +345,7 @@ struct ArgumentValidationTests {
 
     let result = invoke(api: api, ctx: ctx, tool: "type_text", payload: "{}")
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("set_value rejects missing fields")
@@ -349,10 +354,10 @@ struct ArgumentValidationTests {
     defer { api.destroy!(ctx) }
 
     let result1 = invoke(api: api, ctx: ctx, tool: "set_value", payload: "{}")
-    #expect(parseJSON(result1)?["error"] != nil)
+    #expect(parseJSON(result1)?["ok"] as? Bool == false)
 
     let result2 = invoke(api: api, ctx: ctx, tool: "set_value", payload: #"{"id": "s1-1"}"#)
-    #expect(parseJSON(result2)?["error"] != nil)
+    #expect(parseJSON(result2)?["ok"] as? Bool == false)
   }
 
   @Test("clear_field rejects missing id")
@@ -361,7 +366,7 @@ struct ArgumentValidationTests {
     defer { api.destroy!(ctx) }
     let result = invoke(api: api, ctx: ctx, tool: "clear_field", payload: "{}")
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("press_key rejects missing key")
@@ -371,7 +376,7 @@ struct ArgumentValidationTests {
 
     let result = invoke(api: api, ctx: ctx, tool: "press_key", payload: "{}")
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("scroll rejects missing direction")
@@ -381,7 +386,7 @@ struct ArgumentValidationTests {
 
     let result = invoke(api: api, ctx: ctx, tool: "scroll", payload: "{}")
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("scroll rejects invalid direction")
@@ -392,7 +397,7 @@ struct ArgumentValidationTests {
     let result = invoke(
       api: api, ctx: ctx, tool: "scroll", payload: #"{"direction": "diagonal"}"#)
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("drag rejects missing coordinates")
@@ -402,7 +407,7 @@ struct ArgumentValidationTests {
 
     let result = invoke(api: api, ctx: ctx, tool: "drag", payload: "{}")
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("act_and_observe rejects missing action")
@@ -411,7 +416,7 @@ struct ArgumentValidationTests {
     defer { api.destroy!(ctx) }
     let result = invoke(api: api, ctx: ctx, tool: "act_and_observe", payload: "{}")
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("act_and_observe rejects unsupported action")
@@ -421,7 +426,9 @@ struct ArgumentValidationTests {
     let result = invoke(
       api: api, ctx: ctx, tool: "act_and_observe", payload: #"{"action": "weird_action"}"#)
     let json = parseJSON(result)
-    #expect((json?["error"] as? String)?.contains("Unsupported") == true)
+    #expect(json?["ok"] as? Bool == false)
+    #expect(json?["kind"] as? String == "invalid_args")
+    #expect((json?["message"] as? String)?.contains("Unsupported") == true)
   }
 }
 
@@ -599,7 +606,10 @@ struct ToolFunctionalTests {
     let result = invoke(api: api, ctx: ctx, tool: "get_active_window", payload: "{}")
     let json = parseJSON(result)
     #expect(json != nil)
-    if json?["error"] == nil {
+    // On a headless/locked host there may be no active window, in which case
+    // the tool now returns a canonical not_found failure envelope. Only assert
+    // the success shape when we actually got one.
+    if json?["ok"] as? Bool != false {
       #expect(json?["pid"] is Int)
       #expect(json?["app"] is String)
     }
@@ -1154,7 +1164,7 @@ struct BackgroundDriverTests {
     defer { api.destroy!(ctx) }
     let result = invoke(api: api, ctx: ctx, tool: "list_windows", payload: "{}")
     let json = parseJSON(result)
-    #expect(json?["error"] != nil)
+    #expect(json?["ok"] as? Bool == false)
   }
 
   @Test("list_windows for current pid returns a structured response")
@@ -1196,5 +1206,94 @@ struct BackgroundDriverTests {
     _ = invoke(api: api, ctx: ctx, tool: "type_text", payload: payload)
     let afterPid = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? -1
     #expect(beforePid == afterPid)
+  }
+}
+
+// MARK: - Manifest Contract Tests
+//
+// Belt-and-suspenders checks on the host contract: every advertised tool must
+// carry a non-empty `id` AND `description`, and the plugin_id must match the
+// host's registry key. These guard against accidental manifest edits.
+
+@Suite("Manifest Contract")
+struct ManifestContractTests {
+  fileprivate let api = loadAPI()
+
+  @Test("Every tool has a non-empty id and description; plugin_id matches")
+  func everyToolHasIdAndDescription() {
+    let ctx = createContext(api: api)
+    defer { api.destroy!(ctx) }
+
+    let manifestPtr = api.getManifest!(ctx)!
+    let manifest = String(cString: manifestPtr)
+    api.freeString!(manifestPtr)
+
+    let json = parseJSON(manifest)!
+    #expect(json["plugin_id"] as? String == "osaurus.macos-use")
+
+    let capabilities = json["capabilities"] as! [String: Any]
+    let tools = capabilities["tools"] as! [[String: Any]]
+    #expect(!tools.isEmpty)
+
+    for tool in tools {
+      let id = tool["id"] as? String
+      #expect(id != nil && !(id!.isEmpty), "Tool is missing a non-empty 'id'")
+      let desc = tool["description"] as? String
+      #expect(
+        desc != nil && !(desc!.isEmpty),
+        "Tool '\(id ?? "?")' is missing a non-empty 'description'")
+    }
+  }
+}
+
+// MARK: - Envelope Tests
+//
+// The canonical failure envelope is the fix for the host's auto-wrap behavior:
+// without it, error strings get misclassified as successes. These assert the
+// shape and the per-kind default `retryable` mapping required by the contract.
+
+@Suite("Envelope")
+struct EnvelopeTests {
+  @Test("failure round-trips with correct shape and default retryable")
+  func failureRoundTrip() throws {
+    let json = Envelope.failure(.notFound, "element gone")
+    let obj =
+      try JSONSerialization.jsonObject(with: json.data(using: .utf8)!) as! [String: Any]
+    #expect(obj["ok"] as? Bool == false)
+    #expect(obj["kind"] as? String == "not_found")
+    #expect(obj["message"] as? String == "element gone")
+    // not_found defaults to non-retryable.
+    #expect(obj["retryable"] as? Bool == false)
+  }
+
+  @Test("default retryable per kind matches the contract")
+  func defaultRetryablePerKind() throws {
+    func retryable(_ kind: Envelope.Kind) throws -> Bool {
+      let obj =
+        try JSONSerialization.jsonObject(
+          with: Envelope.failure(kind, "x").data(using: .utf8)!) as! [String: Any]
+      return obj["retryable"] as! Bool
+    }
+    #expect(try retryable(.invalidArgs) == true)
+    #expect(try retryable(.executionError) == true)
+    #expect(try retryable(.unavailable) == true)
+    #expect(try retryable(.notFound) == false)
+  }
+
+  @Test("explicit retryable override wins")
+  func explicitRetryableOverride() throws {
+    let json = Envelope.failure(.notFound, "x", retryable: true)
+    let obj =
+      try JSONSerialization.jsonObject(with: json.data(using: .utf8)!) as! [String: Any]
+    #expect(obj["retryable"] as? Bool == true)
+  }
+
+  @Test("message with control characters and quotes produces valid JSON")
+  func escapingProducesValidJSON() throws {
+    let nasty = "line1\nline2\t\"quoted\" \\backslash\u{01}"
+    let json = Envelope.failure(.executionError, nasty)
+    let obj =
+      try JSONSerialization.jsonObject(with: json.data(using: .utf8)!) as! [String: Any]
+    #expect(obj["message"] as? String == nasty)
   }
 }
