@@ -145,7 +145,7 @@ enum PluginManifest {
           },
           {
             "id": "type_text",
-            "description": "Type text into the focused element. With `id` (a snapshot id), focuses that element first AND clears it (replace=true by default). With `pid` (or implicitly, the pid derived from `id` or the most-recent snapshot), keystrokes are routed per-pid via CGEvent.postToPid — the user can keep typing in their own app. Without any pid hint, falls back to the HID tap (visible to the user). If the snapshot id is stale, returns 'stale: true' and the agent should re-observe.",
+            "description": "Type text into the focused element. With `id` (a snapshot id), focuses that element first AND clears it (replace=true by default). With `pid` (or implicitly, the pid derived from `id` or the most-recent snapshot), keystrokes are routed per-pid via CGEvent.postToPid — the user can keep typing in their own app. The resolved pid and app name are echoed in the result. Without any pid hint (no recent snapshot either), returns invalid_args. If the snapshot id is stale, the failure includes 'stale: true' and the agent should re-observe.",
             "parameters": {
               "type": "object",
               "properties": {
@@ -191,7 +191,7 @@ enum PluginManifest {
           },
           {
             "id": "press_key",
-            "description": "Press a keyboard key with optional modifiers. With `pid` (or the most-recent snapshot's pid), routes per-pid so the keystroke lands in that app without affecting the user's frontmost window.",
+            "description": "Press a keyboard key with optional modifiers. With `pid` (or the most-recent snapshot's pid), routes per-pid so the keystroke lands in that app without affecting the user's frontmost window. The resolved pid and app name are echoed in the result; without any pid hint (no recent snapshot either), returns invalid_args.",
             "parameters": {
               "type": "object",
               "properties": {

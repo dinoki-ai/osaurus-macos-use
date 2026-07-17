@@ -401,6 +401,8 @@ private struct TypeTextTool: Tool {
   func run(args: String) -> String {
     withArgs(args, expecting: "'text' field") { (input: Args) in
       // Resolve target pid: explicit > derived from element id > most recent.
+      // The most-recent fallback is kept for compatibility, but the resolved
+      // pid/app is echoed in the result so misrouting is observable.
       let resolvedPid: Int32? =
         input.pid
         ?? input.id.flatMap { AccessibilityManager.shared.pid(for: $0) }
@@ -418,17 +420,22 @@ private struct TypeTextTool: Tool {
         }
       }
 
-      let result: InputResult
-      if let pid = resolvedPid {
-        result = BackgroundDriver.shared.type(pid: pid, text: input.text)
-      } else {
-        result = KeyboardController.shared.type(text: input.text)
+      guard let pid = resolvedPid else {
+        return Envelope.failure(
+          .invalidArgs,
+          "No target pid available. Pass 'pid' or an element 'id', or observe an app first "
+            + "(open_application / get_ui_elements) so a recent pid exists.")
       }
+
+      let result = BackgroundDriver.shared.type(pid: pid, text: input.text)
       if result.success {
-        let delta = resolvedPid.flatMap { computeFocusDelta(pid: $0) }
-        return serializeResult(ElementActionResult.ok(delta: delta))
+        return serializeResult(
+          ElementActionResult.ok(
+            delta: computeFocusDelta(pid: pid), pid: pid, app: appName(for: pid),
+            route: BackgroundDriver.shared.lastRoute))
       }
-      return serializeActionResult(ElementActionResult.fail(result.error ?? "Type failed"))
+      return serializeActionResult(
+        ElementActionResult.fail(result.error ?? "Type failed", pid: pid, app: appName(for: pid)))
     }
   }
 }
@@ -448,18 +455,27 @@ private struct PressKeyTool: Tool {
   func run(args: String) -> String {
     withArgs(args, expecting: "'key' field") { (input: Args) in
       let flags = parseModifierFlags(input.modifiers)
-      let resolvedPid = input.pid ?? AccessibilityManager.shared.mostRecentPid()
-      let result: InputResult
-      if let pid = resolvedPid, let code = keyCode(for: input.key) {
-        result = BackgroundDriver.shared.pressKey(pid: pid, keyCode: code, modifiers: flags)
-      } else {
-        result = KeyboardController.shared.pressKey(keyName: input.key, modifiers: flags)
+      guard let code = keyCode(for: input.key) else {
+        return Envelope.failure(.invalidArgs, "Unknown key: \(input.key)")
       }
+      // Explicit pid wins; otherwise fall back to the most recent snapshot's
+      // pid, echoing the resolved pid/app so misrouting is observable.
+      guard let pid = input.pid ?? AccessibilityManager.shared.mostRecentPid() else {
+        return Envelope.failure(
+          .invalidArgs,
+          "No target pid available. Pass 'pid', or observe an app first "
+            + "(open_application / get_ui_elements) so a recent pid exists.")
+      }
+      let result = BackgroundDriver.shared.pressKey(pid: pid, keyCode: code, modifiers: flags)
       if result.success {
-        let delta = resolvedPid.flatMap { computeFocusDelta(pid: $0) }
-        return serializeResult(ElementActionResult.ok(delta: delta))
+        return serializeResult(
+          ElementActionResult.ok(
+            delta: computeFocusDelta(pid: pid), pid: pid, app: appName(for: pid),
+            route: BackgroundDriver.shared.lastRoute))
       }
-      return serializeActionResult(ElementActionResult.fail(result.error ?? "Press key failed"))
+      return serializeActionResult(
+        ElementActionResult.fail(
+          result.error ?? "Press key failed", pid: pid, app: appName(for: pid)))
     }
   }
 }
