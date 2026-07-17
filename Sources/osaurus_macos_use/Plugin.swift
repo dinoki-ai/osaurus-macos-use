@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
@@ -15,6 +16,23 @@ private func serializeResult<T: Encodable>(_ value: T) -> String {
     return Envelope.failure(
       .executionError, "Failed to serialize result: \(error.localizedDescription)")
   }
+}
+
+/// Serialize an action result, normalizing failures into the canonical
+/// failure envelope. The host auto-wraps raw payloads as successes, so a
+/// raw `{"success":false,...}` would be host-visible as a success.
+private func serializeActionResult(_ result: ElementActionResult) -> String {
+  guard result.success else { return Envelope.actionFailure(result) }
+  return serializeResult(result)
+}
+
+private func serializeInputResult(_ result: InputResult) -> String {
+  guard result.success else { return Envelope.inputFailure(result) }
+  return serializeResult(result)
+}
+
+private func appName(for pid: Int32) -> String? {
+  return NSRunningApplication(processIdentifier: pid)?.localizedName
 }
 
 /// Decode a tool's `Args` struct from a JSON string and run `body` with it,
@@ -328,13 +346,13 @@ private struct ClickTool: Tool {
           (input.doubleClick == true)
           ? BackgroundDriver.shared.doubleClick(pid: pid, point: point, button: button)
           : BackgroundDriver.shared.click(pid: pid, point: point, button: button)
-        return serializeResult(result)
+        return serializeInputResult(result)
       } else {
         let result: InputResult =
           (input.doubleClick == true)
           ? MouseController.shared.doubleClick(at: point, button: button)
           : MouseController.shared.click(at: point, button: button)
-        return serializeResult(result)
+        return serializeInputResult(result)
       }
     }
   }
@@ -362,7 +380,7 @@ private struct ClickElementTool: Tool {
       } else {
         result = ElementInteraction.shared.clickElement(id: input.id)
       }
-      return serializeResult(result)
+      return serializeActionResult(result)
     }
   }
 }
@@ -391,7 +409,7 @@ private struct TypeTextTool: Tool {
       if let elementId = input.id {
         let focusResult = ElementInteraction.shared.focusElement(id: elementId)
         if !focusResult.success {
-          return serializeResult(focusResult)
+          return serializeActionResult(focusResult)
         }
         if input.replace ?? true {
           // Best-effort clear; some fields aren't AX-clearable, in which case
@@ -410,7 +428,7 @@ private struct TypeTextTool: Tool {
         let delta = resolvedPid.flatMap { computeFocusDelta(pid: $0) }
         return serializeResult(ElementActionResult.ok(delta: delta))
       }
-      return serializeResult(ElementActionResult.fail(result.error ?? "Type failed"))
+      return serializeActionResult(ElementActionResult.fail(result.error ?? "Type failed"))
     }
   }
 }
@@ -441,7 +459,7 @@ private struct PressKeyTool: Tool {
         let delta = resolvedPid.flatMap { computeFocusDelta(pid: $0) }
         return serializeResult(ElementActionResult.ok(delta: delta))
       }
-      return serializeResult(ElementActionResult.fail(result.error ?? "Press key failed"))
+      return serializeActionResult(ElementActionResult.fail(result.error ?? "Press key failed"))
     }
   }
 }
@@ -478,13 +496,13 @@ private struct ScrollTool: Tool {
       if let pid = input.pid {
         let result = BackgroundDriver.shared.scroll(
           pid: pid, direction: direction, amount: input.amount ?? 3)
-        return serializeResult(result)
+        return serializeInputResult(result)
       } else {
         if let x = input.x, let y = input.y {
           _ = MouseController.shared.moveTo(CGPoint(x: x, y: y))
         }
         let result = MouseController.shared.scroll(direction: direction, amount: input.amount ?? 3)
-        return serializeResult(result)
+        return serializeInputResult(result)
       }
     }
   }
@@ -503,7 +521,7 @@ private struct SetValueTool: Tool {
 
   func run(args: String) -> String {
     withArgs(args, expecting: "'id' (string) and 'value' fields") { (input: Args) in
-      return serializeResult(
+      return serializeActionResult(
         ElementInteraction.shared.setElementValue(id: input.id, value: input.value))
     }
   }
@@ -521,7 +539,7 @@ private struct ClearFieldTool: Tool {
 
   func run(args: String) -> String {
     withArgs(args, expecting: "'id' field (string, e.g. 's1-5')") { (input: Args) in
-      return serializeResult(ElementInteraction.shared.clearElement(id: input.id))
+      return serializeActionResult(ElementInteraction.shared.clearElement(id: input.id))
     }
   }
 }
@@ -549,10 +567,10 @@ private struct DragTool: Tool {
       // route per-pid when we can (saves cross-app interference) but the
       // HID tap still fires for each step.
       if let pid = input.pid {
-        return serializeResult(
+        return serializeInputResult(
           BackgroundDriver.shared.drag(pid: pid, from: start, to: end))
       }
-      return serializeResult(MouseController.shared.drag(from: start, to: end))
+      return serializeInputResult(MouseController.shared.drag(from: start, to: end))
     }
   }
 }
@@ -579,7 +597,11 @@ private struct TakeScreenshotTool: Tool {
     {
       options = parsed
     }
-    return serializeResult(ScreenshotController.shared.capture(options: options))
+    let result = ScreenshotController.shared.capture(options: options)
+    if let failure = result.failure {
+      return Envelope.failure(failure.kind, failure.message)
+    }
+    return serializeResult(result)
   }
 }
 
@@ -640,6 +662,15 @@ private struct ActAndObserveTool: Tool {
       .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 
     let actionJSON = tool.run(args: subPayload)
+    // Failed sub-actions now surface as canonical failure envelopes; pass
+    // them through untouched so the failure stays host-visible instead of
+    // being re-wrapped inside a successful CombinedResult.
+    if let d = actionJSON.data(using: .utf8),
+      let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+      obj["ok"] as? Bool == false
+    {
+      return actionJSON
+    }
     let actionResult: ElementActionResult = {
       guard let d = actionJSON.data(using: .utf8),
         let parsed = try? JSONDecoder().decode(ElementActionResult.self, from: d)
