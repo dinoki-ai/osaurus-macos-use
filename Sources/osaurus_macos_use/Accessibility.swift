@@ -161,6 +161,12 @@ struct TraversalResult: Encodable {
 /// IDs are snapshot-scoped strings ("s{snapshot}-{element}"). The last two
 /// snapshots are retained so an action immediately after a re-observe still
 /// resolves correctly.
+///
+/// Wave 2: the snapshot cache and most-recent-pid tracking are keyed by
+/// agent scope (`AgentScope`/`AgentKeyedStore`) so concurrent agents on an
+/// ABI v4+ host see independent state. With no agent id (v1 host, outside
+/// an agent frame, unit tests) everything lands in the single "global"
+/// scope — identical to the previous process-global behavior.
 final class AccessibilityManager: @unchecked Sendable {
   static let shared = AccessibilityManager()
 
@@ -169,12 +175,17 @@ final class AccessibilityManager: @unchecked Sendable {
   /// would not help (the cancel flag is only checked between AX calls).
   private static let axMessagingTimeout: Float = 3.0
 
-  private var snapshots: [Int: [String: CachedElement]] = [:]
-  private var snapshotPids: [Int: Int32] = [:]
-  private var snapshotOrder: [Int] = []
-  private var currentSnapshotId: Int = 0
+  /// Per-agent-scope snapshot cache. Snapshot ids are also per scope: two
+  /// agents each get their own "s1", resolving to their own elements.
+  private struct SnapshotState {
+    var snapshots: [Int: [String: CachedElement]] = [:]
+    var snapshotPids: [Int: Int32] = [:]
+    var snapshotOrder: [Int] = []
+    var currentSnapshotId: Int = 0
+  }
+
   private static let maxSnapshotsToRetain: Int = 2
-  private let lock = NSLock()
+  private let store = AgentKeyedStore<SnapshotState> { SnapshotState() }
 
   private init() {
     // Apply the global AX timeout once at first access.
@@ -185,25 +196,25 @@ final class AccessibilityManager: @unchecked Sendable {
   // MARK: Snapshot lifecycle
 
   func beginNewSnapshot(pid: Int32) -> Int {
-    lock.lock()
-    defer { lock.unlock() }
-    currentSnapshotId += 1
-    let snapId = currentSnapshotId
-    snapshots[snapId] = [:]
-    snapshotPids[snapId] = pid
-    snapshotOrder.append(snapId)
-    while snapshotOrder.count > Self.maxSnapshotsToRetain {
-      let removed = snapshotOrder.removeFirst()
-      snapshots.removeValue(forKey: removed)
-      snapshotPids.removeValue(forKey: removed)
+    store.withState { state in
+      state.currentSnapshotId += 1
+      let snapId = state.currentSnapshotId
+      state.snapshots[snapId] = [:]
+      state.snapshotPids[snapId] = pid
+      state.snapshotOrder.append(snapId)
+      while state.snapshotOrder.count > Self.maxSnapshotsToRetain {
+        let removed = state.snapshotOrder.removeFirst()
+        state.snapshots.removeValue(forKey: removed)
+        state.snapshotPids.removeValue(forKey: removed)
+      }
+      return snapId
     }
-    return snapId
   }
 
   fileprivate func store(snapshotId: Int, elementId: String, cached: CachedElement) {
-    lock.lock()
-    defer { lock.unlock() }
-    snapshots[snapshotId, default: [:]][elementId] = cached
+    store.withState { state in
+      state.snapshots[snapshotId, default: [:]][elementId] = cached
+    }
   }
 
   // MARK: Lookup
@@ -211,47 +222,48 @@ final class AccessibilityManager: @unchecked Sendable {
   /// Look up a cached element by its snapshot-scoped string id.
   /// Distinguishes between malformed, stale, removed, and found.
   func lookup(id: String) -> ElementLookup {
-    lock.lock()
-    defer { lock.unlock() }
+    store.withState { state in
+      guard let parsed = SnapshotIdFormat.parse(id) else {
+        return .malformed(id: id)
+      }
 
-    guard let parsed = SnapshotIdFormat.parse(id) else {
-      return .malformed(id: id)
-    }
+      guard state.snapshots[parsed.snapshot] != nil else {
+        return .stale(
+          requestedSnapshot: parsed.snapshot, currentSnapshot: state.currentSnapshotId)
+      }
 
-    guard snapshots[parsed.snapshot] != nil else {
-      return .stale(requestedSnapshot: parsed.snapshot, currentSnapshot: currentSnapshotId)
+      if let element = state.snapshots[parsed.snapshot]?[id] {
+        return .found(element)
+      }
+      return .removed(id: id)
     }
-
-    if let element = snapshots[parsed.snapshot]?[id] {
-      return .found(element)
-    }
-    return .removed(id: id)
   }
 
   /// Look up an element's pid from its id. Used for delta computation.
   func pid(for id: String) -> Int32? {
-    lock.lock()
-    defer { lock.unlock() }
-    guard let parsed = SnapshotIdFormat.parse(id) else { return nil }
-    return snapshotPids[parsed.snapshot]
+    store.withState { state in
+      guard let parsed = SnapshotIdFormat.parse(id) else { return nil }
+      return state.snapshotPids[parsed.snapshot]
+    }
   }
 
-  /// Returns the most-recently traversed pid (for annotated screenshots, etc.)
+  /// Returns the most-recently traversed pid (for annotated screenshots,
+  /// implicit type_text/press_key routing, etc.) within the current scope.
   func mostRecentPid() -> Int32? {
-    lock.lock()
-    defer { lock.unlock() }
-    guard let last = snapshotOrder.last else { return nil }
-    return snapshotPids[last]
+    store.withState { state in
+      guard let last = state.snapshotOrder.last else { return nil }
+      return state.snapshotPids[last]
+    }
   }
 
   /// Returns elements from the most recent snapshot for a given pid.
   /// Used by annotated screenshots.
   func mostRecentElements(for pid: Int32) -> [(id: String, frame: CGRect)] {
-    lock.lock()
-    let snapshotId: Int? =
-      snapshotOrder.reversed().first { snapshotPids[$0] == pid }
-    let cached = snapshotId.flatMap { snapshots[$0] } ?? [:]
-    lock.unlock()
+    let cached: [String: CachedElement] = store.withState { state in
+      let snapshotId: Int? =
+        state.snapshotOrder.reversed().first { state.snapshotPids[$0] == pid }
+      return snapshotId.flatMap { state.snapshots[$0] } ?? [:]
+    }
 
     var results: [(id: String, frame: CGRect)] = []
     for (id, element) in cached {

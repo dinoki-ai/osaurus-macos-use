@@ -6,13 +6,21 @@ import Foundation
 struct InputResult: Encodable {
   let success: Bool
   let error: String?
+  /// Agent scope in effect when the input was performed ("global" or the
+  /// agent uuid on ABI v4+ hosts). Echoed so misrouting is observable.
+  let agentScope: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case success, error
+    case agentScope = "agent_scope"
+  }
 
   static func ok() -> InputResult {
-    return InputResult(success: true, error: nil)
+    return InputResult(success: true, error: nil, agentScope: AgentScope.currentKey())
   }
 
   static func fail(_ message: String) -> InputResult {
-    return InputResult(success: false, error: message)
+    return InputResult(success: false, error: message, agentScope: AgentScope.currentKey())
   }
 }
 

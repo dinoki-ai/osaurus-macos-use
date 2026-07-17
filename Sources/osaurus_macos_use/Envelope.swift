@@ -47,6 +47,13 @@ extension Envelope {
     let cancelled: Bool?
     let pid: Int32?
     let app: String?
+    /// Agent scope the action consulted ("global" or the agent uuid).
+    let agentScope: String?
+
+    private enum CodingKeys: String, CodingKey {
+      case stale, removed, cancelled, pid, app
+      case agentScope = "agent_scope"
+    }
   }
 
   static func kind(forFailedAction result: ElementActionResult) -> Kind {
@@ -61,7 +68,8 @@ extension Envelope {
       result.error ?? "Action failed",
       data: ActionFailureData(
         stale: result.stale, removed: result.removed, cancelled: result.cancelled,
-        pid: result.pid, app: result.app))
+        pid: result.pid, app: result.app,
+        agentScope: result.agentScope ?? AgentScope.currentKey()))
   }
 
   static func inputFailure(_ result: InputResult) -> String {

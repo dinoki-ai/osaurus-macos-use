@@ -749,12 +749,20 @@ private struct SessionResult: Encodable {
   let stepIndex: Int?
   let totalSteps: Int?
   let narration: String?
+  /// Agent scope holding this session record ("global" or the agent uuid).
+  let agentScope: String
+
+  private enum CodingKeys: String, CodingKey {
+    case success, title, isActive, isCancelled, stepIndex, totalSteps, narration
+    case agentScope = "agent_scope"
+  }
 
   static func current(success: Bool = true) -> SessionResult {
     let s = AutomationSession.shared.currentState()
     return SessionResult(
       success: success, title: s.title, isActive: s.isActive, isCancelled: s.isCancelled,
-      stepIndex: s.stepIndex, totalSteps: s.totalSteps, narration: s.narration)
+      stepIndex: s.stepIndex, totalSteps: s.totalSteps, narration: s.narration,
+      agentScope: AgentScope.currentKey())
   }
 }
 
@@ -865,6 +873,9 @@ nonisolated(unsafe) private var api = PluginEntry.makeAPI(
     Unmanaged.passRetained(PluginContext()).toOpaque()
   },
   destroy: { ctxPtr in
+    // Destroy runs outside any per-agent frame, so this ends the global
+    // scope's session (wave-1 parity). Per-agent session records simply
+    // die with the process — the whole plugin is being unloaded.
     AutomationSession.shared.endSession(reason: "plugin destroyed")
     if let ctxPtr = ctxPtr {
       Unmanaged<PluginContext>.fromOpaque(ctxPtr).release()
@@ -888,7 +899,14 @@ nonisolated(unsafe) private var api = PluginEntry.makeAPI(
     guard let tool = toolRegistry[id] else {
       return osrMakeCString(Envelope.failure(.notFound, "Unknown tool: \(id)"))
     }
-    return osrMakeCString(tool.run(args: payload))
+    // Resolve the active agent id ONCE per invoke frame (non-nil only on
+    // ABI v4+ hosts inside a per-agent frame) and pin it for the duration
+    // of the call so element-cache / recent-pid / session state is scoped
+    // to that agent. Nil pins the "global" scope (wave-1 behavior).
+    let agentId = HostBridge.shared.activeAgentId()
+    return AgentScope.withScope(agentId) {
+      osrMakeCString(tool.run(args: payload))
+    }
   }
 )
 
