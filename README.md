@@ -2,7 +2,7 @@
 
 An Osaurus plugin for **backgrounded** macOS automation. The agent drives any Mac app while the user keeps working in the foreground — cursor never moves, focus never changes, Spaces never follow. Built on the [cua-driver](https://github.com/trycua/cua/blob/main/blog/inside-macos-window-internals.md) recipe (SkyLight `SLEventPostToPid`, yabai-style focus-without-raise, Chromium primer click) plus snapshot-scoped element ids and cua-style `ax`/`vision`/`som` capture modes.
 
-See [SKILL.md](SKILL.md) for the agent contract and [REFERENCE.md](REFERENCE.md) for keyboard shortcuts, per-app recipes, and full schemas. See [CHANGELOG.md](CHANGELOG.md) for release notes (latest: v3.0.0 added background-by-default driving and the cua capture modes).
+See [SKILL.md](SKILL.md) for the agent contract and [REFERENCE.md](REFERENCE.md) for keyboard shortcuts, per-app recipes, and full schemas. See [CHANGELOG.md](CHANGELOG.md) for release notes (current release: v3.0.3; v3.0.0 added background-by-default driving and the cua capture modes).
 
 ## Prerequisites
 
@@ -136,8 +136,8 @@ Install locally:
 
 ```bash
 osaurus manifest extract .build/release/libosaurus-macos-use.dylib
-osaurus tools package osaurus.macos-use 3.0.0
-osaurus tools install ./osaurus.macos-use-3.0.0.zip
+osaurus tools package osaurus.macos-use 3.0.3
+osaurus tools install ./osaurus.macos-use-3.0.3.zip
 ```
 
 ## Publishing
@@ -145,8 +145,8 @@ osaurus tools install ./osaurus.macos-use-3.0.0.zip
 A GitHub Actions workflow (`.github/workflows/release.yml`) builds and releases the plugin when you push a version tag.
 
 ```bash
-git tag v3.0.0
-git push origin v3.0.0
+git tag v3.0.3
+git push origin v3.0.3
 ```
 
 ## License
