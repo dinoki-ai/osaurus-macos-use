@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import OsaurusPluginABI
 import OsaurusPluginKit
 
 // MARK: - JSON Helpers
@@ -845,63 +846,34 @@ private let toolRegistry: [String: Tool] = {
 }()
 
 // MARK: - C ABI Surface
-
-private typealias osr_plugin_ctx_t = UnsafeMutableRawPointer
-
-private typealias osr_free_string_t = @convention(c) (UnsafePointer<CChar>?) -> Void
-private typealias osr_init_t = @convention(c) () -> osr_plugin_ctx_t?
-private typealias osr_destroy_t = @convention(c) (osr_plugin_ctx_t?) -> Void
-private typealias osr_get_manifest_t = @convention(c) (osr_plugin_ctx_t?) -> UnsafePointer<CChar>?
-private typealias osr_invoke_t =
-  @convention(c) (
-    osr_plugin_ctx_t?,
-    UnsafePointer<CChar>?,
-    UnsafePointer<CChar>?,
-    UnsafePointer<CChar>?
-  ) -> UnsafePointer<CChar>?
-
-private struct osr_plugin_api {
-  var free_string: osr_free_string_t?
-  var `init`: osr_init_t?
-  var destroy: osr_destroy_t?
-  var get_manifest: osr_get_manifest_t?
-  var invoke: osr_invoke_t?
-}
+//
+// The API table and both entry points are built with the SDK's PluginEntry
+// helpers. The v1 entry is kept exactly as before for old hosts; v2+ hosts
+// try `osaurus_plugin_entry_v2` first, which captures the injected host API
+// into `HostBridge.shared` so invoke frames can read the active agent id
+// (ABI v4+) for per-agent GUI-state scoping.
 
 /// Opaque handle the host uses to reference the plugin. Currently empty —
 /// state lives in the singletons (`AutomationSession`, `AccessibilityManager`).
 private final class PluginContext {}
 
-private func makeCString(_ s: String) -> UnsafePointer<CChar>? {
-  guard let ptr = strdup(s) else { return nil }
-  return UnsafePointer(ptr)
-}
-
 // MARK: - API Implementation
 
-nonisolated(unsafe) private var api: osr_plugin_api = {
-  var api = osr_plugin_api()
-
-  api.free_string = { ptr in
-    if let p = ptr { free(UnsafeMutableRawPointer(mutating: p)) }
-  }
-
-  api.`init` = {
+nonisolated(unsafe) private var api = PluginEntry.makeAPI(
+  version: OsrABIVersion.v2,
+  init: {
     Unmanaged.passRetained(PluginContext()).toOpaque()
-  }
-
-  api.destroy = { ctxPtr in
+  },
+  destroy: { ctxPtr in
     AutomationSession.shared.endSession(reason: "plugin destroyed")
     if let ctxPtr = ctxPtr {
       Unmanaged<PluginContext>.fromOpaque(ctxPtr).release()
     }
-  }
-
-  api.get_manifest = { _ in
-    makeCString(PluginManifest.json)
-  }
-
-  api.invoke = { _, typePtr, idPtr, payloadPtr in
+  },
+  getManifest: { _ in
+    osrMakeCString(PluginManifest.json)
+  },
+  invoke: { _, typePtr, idPtr, payloadPtr in
     guard let typePtr = typePtr, let idPtr = idPtr, let payloadPtr = payloadPtr else {
       return nil
     }
@@ -910,21 +882,24 @@ nonisolated(unsafe) private var api: osr_plugin_api = {
     let payload = String(cString: payloadPtr)
 
     guard type == "tool" else {
-      return makeCString(
+      return osrMakeCString(
         Envelope.failure(.invalidArgs, "Unknown capability type: \(type)"))
     }
     guard let tool = toolRegistry[id] else {
-      return makeCString(Envelope.failure(.notFound, "Unknown tool: \(id)"))
+      return osrMakeCString(Envelope.failure(.notFound, "Unknown tool: \(id)"))
     }
-    return makeCString(tool.run(args: payload))
+    return osrMakeCString(tool.run(args: payload))
   }
+)
 
-  return api
-}()
+// MARK: - Plugin Entry Points
 
-// MARK: - Plugin Entry Point
+@_cdecl("osaurus_plugin_entry_v2")
+public func osaurus_plugin_entry_v2(_ host: UnsafeRawPointer?) -> UnsafeRawPointer? {
+  return PluginEntry.enterV2(host, api: &api)
+}
 
 @_cdecl("osaurus_plugin_entry")
 public func osaurus_plugin_entry() -> UnsafeRawPointer? {
-  return UnsafeRawPointer(&api)
+  return PluginEntry.enterV1(api: &api)
 }
