@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import OsaurusPluginKit
 import Testing
 
 @testable import osaurus_macos_use
@@ -524,7 +525,7 @@ struct ElementLookupTests {
 struct ToolFunctionalTests {
   fileprivate let api = loadAPI()
 
-  @Test("click_element returns stale error for unknown snapshot id")
+  @Test("click_element returns canonical failure for unknown snapshot id")
   func clickElementStale() {
     let ctx = createContext(api: api)
     defer { api.destroy!(ctx) }
@@ -532,11 +533,14 @@ struct ToolFunctionalTests {
     let result = invoke(
       api: api, ctx: ctx, tool: "click_element", payload: #"{"id": "s99999999-1"}"#)
     let json = parseJSON(result)!
-    #expect(json["success"] as? Bool == false)
-    #expect(json["stale"] as? Bool == true)
+    #expect(json["ok"] as? Bool == false)
+    #expect(json["kind"] as? String == "not_found")
+    #expect(json["retryable"] as? Bool == false)
+    let data = json["data"] as? [String: Any]
+    #expect(data?["stale"] as? Bool == true)
   }
 
-  @Test("click_element returns malformed error for non-snapshot id")
+  @Test("click_element returns invalid_args failure for non-snapshot id")
   func clickElementMalformed() {
     let ctx = createContext(api: api)
     defer { api.destroy!(ctx) }
@@ -544,11 +548,13 @@ struct ToolFunctionalTests {
     let result = invoke(
       api: api, ctx: ctx, tool: "click_element", payload: #"{"id": "garbage"}"#)
     let json = parseJSON(result)!
-    #expect(json["success"] as? Bool == false)
-    #expect((json["error"] as? String)?.contains("not a valid snapshot id") == true)
+    #expect(json["ok"] as? Bool == false)
+    #expect(json["kind"] as? String == "invalid_args")
+    #expect(json["retryable"] as? Bool == false)
+    #expect((json["message"] as? String)?.contains("not a valid snapshot id") == true)
   }
 
-  @Test("set_value returns stale error for unknown snapshot id")
+  @Test("set_value returns canonical failure for unknown snapshot id")
   func setValueStale() {
     let ctx = createContext(api: api)
     defer { api.destroy!(ctx) }
@@ -557,22 +563,26 @@ struct ToolFunctionalTests {
       api: api, ctx: ctx, tool: "set_value",
       payload: #"{"id": "s99999999-1", "value": "test"}"#)
     let json = parseJSON(result)!
-    #expect(json["success"] as? Bool == false)
-    #expect(json["stale"] as? Bool == true)
+    #expect(json["ok"] as? Bool == false)
+    #expect(json["kind"] as? String == "not_found")
+    let data = json["data"] as? [String: Any]
+    #expect(data?["stale"] as? Bool == true)
   }
 
-  @Test("clear_field returns stale error for unknown snapshot id")
+  @Test("clear_field returns canonical failure for unknown snapshot id")
   func clearFieldStale() {
     let ctx = createContext(api: api)
     defer { api.destroy!(ctx) }
     let result = invoke(
       api: api, ctx: ctx, tool: "clear_field", payload: #"{"id": "s99999999-1"}"#)
     let json = parseJSON(result)!
-    #expect(json["success"] as? Bool == false)
-    #expect(json["stale"] as? Bool == true)
+    #expect(json["ok"] as? Bool == false)
+    #expect(json["kind"] as? String == "not_found")
+    let data = json["data"] as? [String: Any]
+    #expect(data?["stale"] as? Bool == true)
   }
 
-  @Test("type_text with stale id returns stale error")
+  @Test("type_text with stale id returns canonical failure")
   func typeTextStaleId() {
     let ctx = createContext(api: api)
     defer { api.destroy!(ctx) }
@@ -581,11 +591,13 @@ struct ToolFunctionalTests {
       api: api, ctx: ctx, tool: "type_text",
       payload: #"{"text": "hello", "id": "s99999999-1"}"#)
     let json = parseJSON(result)!
-    #expect(json["success"] as? Bool == false)
-    #expect(json["stale"] as? Bool == true)
+    #expect(json["ok"] as? Bool == false)
+    #expect(json["kind"] as? String == "not_found")
+    let data = json["data"] as? [String: Any]
+    #expect(data?["stale"] as? Bool == true)
   }
 
-  @Test("press_key with unknown key returns error")
+  @Test("press_key with unknown key returns invalid_args")
   func pressKeyUnknownKey() {
     let ctx = createContext(api: api)
     defer { api.destroy!(ctx) }
@@ -594,8 +606,10 @@ struct ToolFunctionalTests {
       api: api, ctx: ctx, tool: "press_key",
       payload: #"{"key": "nonexistent_key_name"}"#)
     let json = parseJSON(result)!
-    #expect(json["success"] as? Bool == false)
-    #expect((json["error"] as? String)?.contains("Unknown key") == true)
+    #expect(json["ok"] as? Bool == false)
+    #expect(json["kind"] as? String == "invalid_args")
+    #expect(json["retryable"] as? Bool == false)
+    #expect((json["message"] as? String)?.contains("Unknown key") == true)
   }
 
   @Test("get_active_window returns valid structure")
@@ -634,16 +648,23 @@ struct ToolFunctionalTests {
     }
   }
 
-  @Test("take_screenshot returns content array")
+  @Test("take_screenshot returns content array or canonical failure")
   func takeScreenshotReturnsContent() {
     let ctx = createContext(api: api)
     defer { api.destroy!(ctx) }
 
     let result = invoke(api: api, ctx: ctx, tool: "take_screenshot", payload: "{}")
     let json = parseJSON(result)!
-    let content = json["content"] as? [[String: Any]]
-    #expect(content != nil)
-    #expect((content?.count ?? 0) >= 1)
+    // On hosts without Screen Recording permission, capture fails and the
+    // tool now returns a canonical failure envelope instead of a success-
+    // shaped error string. Only assert content when capture succeeded.
+    if json["ok"] as? Bool == false {
+      #expect(json["kind"] is String)
+    } else {
+      let content = json["content"] as? [[String: Any]]
+      #expect(content != nil)
+      #expect((content?.count ?? 0) >= 1)
+    }
   }
 }
 
@@ -1032,10 +1053,10 @@ struct AutomationSessionTests {
       api: api, ctx: ctx, tool: "click_element",
       payload: #"{"id": "s99-1", "narration": "Clicking continue"}"#)
     let json = parseJSON(result)!
-    #expect(json["success"] as? Bool == false)
+    #expect(json["ok"] as? Bool == false)
     // The cancelled flag is no longer in flight — backgrounded driving
     // doesn't have an Esc cancel path.
-    #expect(json["cancelled"] == nil)
+    #expect((json["data"] as? [String: Any])?["cancelled"] == nil)
     reset()
   }
 
@@ -1274,10 +1295,14 @@ struct EnvelopeTests {
           with: Envelope.failure(kind, "x").data(using: .utf8)!) as! [String: Any]
       return obj["retryable"] as! Bool
     }
-    #expect(try retryable(.invalidArgs) == true)
-    #expect(try retryable(.executionError) == true)
-    #expect(try retryable(.unavailable) == true)
+    // Deterministic validation failures must never be marked retryable.
+    // Wave 2: the SDK's canonical kind set replaces the (unused) local
+    // `unavailable` kind with `permission_denied`, which is non-retryable.
+    #expect(try retryable(.invalidArgs) == false)
     #expect(try retryable(.notFound) == false)
+    #expect(try retryable(.permissionDenied) == false)
+    #expect(try retryable(.executionError) == true)
+    #expect(try retryable(.timeout) == true)
   }
 
   @Test("explicit retryable override wins")
@@ -1295,5 +1320,257 @@ struct EnvelopeTests {
     let obj =
       try JSONSerialization.jsonObject(with: json.data(using: .utf8)!) as! [String: Any]
     #expect(obj["message"] as? String == nasty)
+  }
+
+  @Test("failure with data payload attaches a data object")
+  func failureWithData() throws {
+    struct D: Encodable { let stale: Bool }
+    let json = Envelope.failure(.notFound, "gone", data: D(stale: true))
+    let obj =
+      try JSONSerialization.jsonObject(with: json.data(using: .utf8)!) as! [String: Any]
+    #expect(obj["ok"] as? Bool == false)
+    #expect(obj["kind"] as? String == "not_found")
+    #expect((obj["data"] as? [String: Any])?["stale"] as? Bool == true)
+  }
+}
+
+// MARK: - Action Failure Normalization Tests
+//
+// Regression tests for the invoke-boundary fix: a raw
+// `{"success":false,...}` ElementActionResult/InputResult used to be
+// returned verbatim, which the host auto-wrapped as a SUCCESS. Every
+// failed action must now cross the boundary as a canonical failure
+// envelope, preserving stale/removed details under `data`.
+
+@Suite("Action Failure Normalization")
+struct ActionFailureNormalizationTests {
+  fileprivate let api = loadAPI()
+
+  @Test("kind classification for failed action results")
+  func kindClassification() {
+    #expect(Envelope.kind(forFailedAction: .malformed("garbage")) == .invalidArgs)
+    #expect(Envelope.kind(forFailedAction: .stale(requested: 1, current: 2)) == .notFound)
+    #expect(Envelope.kind(forFailedAction: .removed("s1-1")) == .notFound)
+    #expect(Envelope.kind(forFailedAction: .fail("boom")) == .executionError)
+    #expect(Envelope.kind(forFailedAction: .cancelled()) == .executionError)
+  }
+
+  @Test("actionFailure preserves stale/removed details in data")
+  func actionFailurePreservesDetails() throws {
+    let json = Envelope.actionFailure(.stale(requested: 3, current: 7))
+    let obj =
+      try JSONSerialization.jsonObject(with: json.data(using: .utf8)!) as! [String: Any]
+    #expect(obj["ok"] as? Bool == false)
+    #expect(obj["kind"] as? String == "not_found")
+    #expect(obj["retryable"] as? Bool == false)
+    #expect((obj["message"] as? String)?.contains("s3") == true)
+    let data = obj["data"] as? [String: Any]
+    #expect(data?["stale"] as? Bool == true)
+
+    let removed = Envelope.actionFailure(.removed("s7-12"))
+    let removedObj =
+      try JSONSerialization.jsonObject(with: removed.data(using: .utf8)!) as! [String: Any]
+    #expect((removedObj["data"] as? [String: Any])?["removed"] as? Bool == true)
+  }
+
+  @Test("actionFailure carries the resolved pid and app")
+  func actionFailureCarriesPid() throws {
+    let json = Envelope.actionFailure(.fail("Type failed", pid: 1234, app: "Notes"))
+    let obj =
+      try JSONSerialization.jsonObject(with: json.data(using: .utf8)!) as! [String: Any]
+    #expect(obj["kind"] as? String == "execution_error")
+    let data = obj["data"] as? [String: Any]
+    #expect(data?["pid"] as? Int == 1234)
+    #expect(data?["app"] as? String == "Notes")
+  }
+
+  @Test("inputFailure normalizes a failed InputResult")
+  func inputFailureNormalized() throws {
+    let json = Envelope.inputFailure(.fail("Failed to create mouse events"))
+    let obj =
+      try JSONSerialization.jsonObject(with: json.data(using: .utf8)!) as! [String: Any]
+    #expect(obj["ok"] as? Bool == false)
+    #expect(obj["kind"] as? String == "execution_error")
+    #expect(obj["message"] as? String == "Failed to create mouse events")
+  }
+
+  @Test("act_and_observe passes a failed sub-action through as failure")
+  func actAndObservePropagatesFailure() {
+    let ctx = createContext(api: api)
+    defer { api.destroy!(ctx) }
+    let result = invoke(
+      api: api, ctx: ctx, tool: "act_and_observe",
+      payload: #"{"action": "click_element", "id": "s99999999-1"}"#)
+    let json = parseJSON(result)!
+    #expect(json["ok"] as? Bool == false)
+    #expect(json["kind"] as? String == "not_found")
+    #expect((json["data"] as? [String: Any])?["stale"] as? Bool == true)
+  }
+
+  @Test("type_text success with explicit pid echoes the resolved pid")
+  func typeTextEchoesPid() {
+    let ctx = createContext(api: api)
+    defer { api.destroy!(ctx) }
+    let pid = ProcessInfo.processInfo.processIdentifier
+    let result = invoke(
+      api: api, ctx: ctx, tool: "type_text", payload: #"{"text": "x", "pid": \#(pid)}"#)
+    let json = parseJSON(result)!
+    if json["success"] as? Bool == true {
+      #expect(json["pid"] as? Int == Int(pid))
+      #expect(json["route"] is String)
+    } else {
+      // Even on failure, the resolved pid must be observable.
+      #expect((json["data"] as? [String: Any])?["pid"] as? Int == Int(pid))
+    }
+  }
+}
+
+// MARK: - Implicit PID Routing Tests
+//
+// type_text/press_key keep the most-recent-snapshot fallback, but with no
+// explicit pid, no id-derived pid, and no snapshot ever taken, they must
+// return invalid_args instead of guessing (the old code fell back to the
+// HID tap and typed into whatever app the user had focused).
+//
+// NOTE: these tests rely on no test in this process having traversed a real
+// app (nothing calls get_ui_elements/find_elements with a live pid), so
+// AccessibilityManager.mostRecentPid() is deterministically nil.
+
+@Suite("Implicit PID Routing")
+struct ImplicitPidRoutingTests {
+  fileprivate let api = loadAPI()
+
+  @Test("type_text without any pid hint returns invalid_args")
+  func typeTextNoPid() {
+    guard AccessibilityManager.shared.mostRecentPid() == nil else { return }
+    let ctx = createContext(api: api)
+    defer { api.destroy!(ctx) }
+    let result = invoke(api: api, ctx: ctx, tool: "type_text", payload: #"{"text": "hello"}"#)
+    let json = parseJSON(result)!
+    #expect(json["ok"] as? Bool == false)
+    #expect(json["kind"] as? String == "invalid_args")
+    #expect(json["retryable"] as? Bool == false)
+  }
+
+  @Test("press_key without any pid hint returns invalid_args")
+  func pressKeyNoPid() {
+    guard AccessibilityManager.shared.mostRecentPid() == nil else { return }
+    let ctx = createContext(api: api)
+    defer { api.destroy!(ctx) }
+    let result = invoke(api: api, ctx: ctx, tool: "press_key", payload: #"{"key": "return"}"#)
+    let json = parseJSON(result)!
+    #expect(json["ok"] as? Bool == false)
+    #expect(json["kind"] as? String == "invalid_args")
+    #expect(json["retryable"] as? Bool == false)
+  }
+}
+
+// MARK: - Screenshot Save Path Policy Tests
+
+@Suite("Screenshot Save Path Policy")
+struct ScreenshotSavePathPolicyTests {
+  private func makeTempDir() throws -> String {
+    let dir = NSTemporaryDirectory() + "osaurus-savepath-tests-" + UUID().uuidString
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    return dir
+  }
+
+  @Test("relative path is rejected")
+  func relativePathRejected() {
+    if case .allowed = ScreenshotSavePathPolicy.validate("relative/shot.png") {
+      Issue.record("Expected rejection for relative path")
+    }
+  }
+
+  @Test("system directory path is rejected")
+  func systemPathRejected() {
+    for path in ["/etc/shot.png", "/Library/LaunchDaemons/shot.png", "/usr/local/bin/shot.png"] {
+      if case .allowed = ScreenshotSavePathPolicy.validate(path) {
+        Issue.record("Expected rejection for \(path)")
+      }
+    }
+  }
+
+  @Test("dotfile config directories under home are rejected")
+  func dotfileDirsRejected() throws {
+    // The fake home lives under the real tmp dir, so pass a bogus tmp to
+    // exercise the home branch specifically.
+    let home = try makeTempDir()
+    try FileManager.default.createDirectory(
+      atPath: home + "/.ssh", withIntermediateDirectories: true)
+    let verdict = ScreenshotSavePathPolicy.validate(
+      home + "/.ssh/authorized_keys", home: home, tmp: "/nonexistent-tmp")
+    if case .allowed = verdict { Issue.record("Expected rejection for ~/.ssh") }
+
+    let hidden = ScreenshotSavePathPolicy.validate(
+      home + "/.profile", home: home, tmp: "/nonexistent-tmp")
+    if case .allowed = hidden { Issue.record("Expected rejection for hidden file in home") }
+  }
+
+  @Test("visible path under home with existing parent is allowed")
+  func homePathAllowed() throws {
+    let home = try makeTempDir()
+    try FileManager.default.createDirectory(
+      atPath: home + "/Desktop", withIntermediateDirectories: true)
+    let verdict = ScreenshotSavePathPolicy.validate(
+      home + "/Desktop/shot.png", home: home, tmp: "/nonexistent-tmp")
+    guard case .allowed(let canonical) = verdict else {
+      Issue.record("Expected allowed, got \(verdict)")
+      return
+    }
+    #expect(canonical.hasSuffix("/Desktop/shot.png"))
+  }
+
+  @Test("path in the temporary directory is allowed")
+  func tmpPathAllowed() throws {
+    let tmp = try makeTempDir()
+    let verdict = ScreenshotSavePathPolicy.validate(
+      tmp + "/shot.png", home: "/nonexistent-home", tmp: tmp)
+    guard case .allowed = verdict else {
+      Issue.record("Expected allowed, got \(verdict)")
+      return
+    }
+  }
+
+  @Test("missing parent directory is rejected")
+  func missingParentRejected() throws {
+    let home = try makeTempDir()
+    let verdict = ScreenshotSavePathPolicy.validate(
+      home + "/no-such-dir/shot.png", home: home, tmp: "/nonexistent-tmp")
+    if case .allowed = verdict { Issue.record("Expected rejection for missing parent") }
+  }
+
+  @Test("symlink escaping the allowed roots is rejected")
+  func symlinkEscapeRejected() throws {
+    let home = try makeTempDir()
+    let outside = try makeTempDir()
+    try FileManager.default.createSymbolicLink(
+      atPath: home + "/link", withDestinationPath: outside)
+    let verdict = ScreenshotSavePathPolicy.validate(
+      home + "/link/shot.png", home: home, tmp: "/nonexistent-tmp")
+    if case .allowed = verdict {
+      Issue.record("Expected rejection for symlink escape")
+    }
+  }
+
+  @Test("dot-dot traversal out of home is rejected")
+  func dotDotTraversalRejected() throws {
+    let home = try makeTempDir()
+    let verdict = ScreenshotSavePathPolicy.validate(
+      home + "/../../etc/shot.png", home: home, tmp: "/nonexistent-tmp")
+    if case .allowed = verdict { Issue.record("Expected rejection for .. traversal") }
+  }
+}
+
+// MARK: - Manifest Version Tests
+
+@Suite("Manifest Version")
+struct ManifestVersionTests {
+  @Test("manifest declares the released version")
+  func manifestVersion() throws {
+    let json =
+      try JSONSerialization.jsonObject(
+        with: PluginManifest.json.data(using: .utf8)!) as! [String: Any]
+    #expect(json["version"] as? String == "3.0.3")
   }
 }

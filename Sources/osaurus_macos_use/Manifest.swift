@@ -10,6 +10,7 @@ enum PluginManifest {
   static let json: String = """
     {
       "plugin_id": "osaurus.macos-use",
+      "version": "3.0.3",
       "name": "macOS Use",
       "description": "Backgrounded computer-use driver for macOS. Cursor never moves, focus never changes, Spaces never follow. Routes input via SkyLight + per-pid CGEvent channels (cua-driver recipe) so the agent can drive any Mac app while the user keeps working in the foreground. Workflow: list_apps OR open_application -> list_windows -> get_ui_elements (default mode='som' returns AX tree + screenshot + element_index) -> click_element/set_value/type_text by snapshot id -> if 'stale: true' is returned, observe again. Pass `pid` to action tools (or rely on the most-recent snapshot's pid) so input lands in the right app without warping the cursor.",
       "license": "MIT",
@@ -145,7 +146,7 @@ enum PluginManifest {
           },
           {
             "id": "type_text",
-            "description": "Type text into the focused element. With `id` (a snapshot id), focuses that element first AND clears it (replace=true by default). With `pid` (or implicitly, the pid derived from `id` or the most-recent snapshot), keystrokes are routed per-pid via CGEvent.postToPid — the user can keep typing in their own app. Without any pid hint, falls back to the HID tap (visible to the user). If the snapshot id is stale, returns 'stale: true' and the agent should re-observe.",
+            "description": "Type text into the focused element. With `id` (a snapshot id), focuses that element first AND clears it (replace=true by default). With `pid` (or implicitly, the pid derived from `id` or the most-recent snapshot), keystrokes are routed per-pid via CGEvent.postToPid — the user can keep typing in their own app. The resolved pid and app name are echoed in the result. Without any pid hint (no recent snapshot either), returns invalid_args. If the snapshot id is stale, the failure includes 'stale: true' and the agent should re-observe.",
             "parameters": {
               "type": "object",
               "properties": {
@@ -191,7 +192,7 @@ enum PluginManifest {
           },
           {
             "id": "press_key",
-            "description": "Press a keyboard key with optional modifiers. With `pid` (or the most-recent snapshot's pid), routes per-pid so the keystroke lands in that app without affecting the user's frontmost window.",
+            "description": "Press a keyboard key with optional modifiers. With `pid` (or the most-recent snapshot's pid), routes per-pid so the keystroke lands in that app without affecting the user's frontmost window. The resolved pid and app name are echoed in the result; without any pid hint (no recent snapshot either), returns invalid_args.",
             "parameters": {
               "type": "object",
               "properties": {
@@ -281,7 +282,7 @@ enum PluginManifest {
                 "format": { "type": "string", "description": "'jpeg' (default) or 'png'." },
                 "quality": { "type": "number", "description": "JPEG quality 0.0-1.0 (default: 0.7)." },
                 "scale": { "type": "number", "description": "Scale factor 0.0-1.0 (default: 0.5)." },
-                "savePath": { "type": "string", "description": "Save to file instead of returning base64." },
+                "savePath": { "type": "string", "description": "Save to file instead of returning base64. Must be an absolute path inside your home directory (hidden/dotfile directories like ~/.ssh are rejected) or the temporary directory; the parent directory must already exist." },
                 "annotate": { "type": "boolean", "description": "Overlay element-id labels from the most recent snapshot (default: false)." }
               }
             },

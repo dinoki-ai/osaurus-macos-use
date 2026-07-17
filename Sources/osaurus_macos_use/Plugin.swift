@@ -1,6 +1,9 @@
+import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import OsaurusPluginABI
+import OsaurusPluginKit
 
 // MARK: - JSON Helpers
 
@@ -15,6 +18,23 @@ private func serializeResult<T: Encodable>(_ value: T) -> String {
     return Envelope.failure(
       .executionError, "Failed to serialize result: \(error.localizedDescription)")
   }
+}
+
+/// Serialize an action result, normalizing failures into the canonical
+/// failure envelope. The host auto-wraps raw payloads as successes, so a
+/// raw `{"success":false,...}` would be host-visible as a success.
+private func serializeActionResult(_ result: ElementActionResult) -> String {
+  guard result.success else { return Envelope.actionFailure(result) }
+  return serializeResult(result)
+}
+
+private func serializeInputResult(_ result: InputResult) -> String {
+  guard result.success else { return Envelope.inputFailure(result) }
+  return serializeResult(result)
+}
+
+private func appName(for pid: Int32) -> String? {
+  return NSRunningApplication(processIdentifier: pid)?.localizedName
 }
 
 /// Decode a tool's `Args` struct from a JSON string and run `body` with it,
@@ -34,17 +54,27 @@ private func withArgs<Args: Decodable>(
 
 // MARK: - Async Runner Helpers
 
-private func runAsyncOnMain<T: Sendable>(_ block: @escaping @MainActor @Sendable () async -> T) -> T
-{
+/// Maximum time a main-actor hop may block the invoke thread. A wedged main
+/// thread (or a block that never completes) previously hung the host forever.
+private let runAsyncOnMainDeadline: TimeInterval = 15
+
+/// Run an async main-actor block synchronously, bounded by a deadline.
+/// Returns nil when the deadline elapses; callers must map that to a
+/// canonical timeout failure. Never force-unwraps after a timed-out wait.
+private func runAsyncOnMain<T: Sendable>(
+  _ block: @escaping @MainActor @Sendable () async -> T
+) -> T? {
   let semaphore = DispatchSemaphore(value: 0)
-  nonisolated(unsafe) var result: T!
+  nonisolated(unsafe) var result: T?
 
   Task { @MainActor in
     result = await block()
     semaphore.signal()
   }
 
-  semaphore.wait()
+  guard semaphore.wait(timeout: .now() + runAsyncOnMainDeadline) == .success else {
+    return nil
+  }
   return result
 }
 
@@ -106,8 +136,15 @@ private struct OpenApplicationTool: Tool {
   func run(args: String) -> String {
     withArgs(args, expecting: "'identifier' field") { (input: Args) in
       let background = input.background ?? true
-      let opened: Swift.Result<AppInfo, AppError> = runAsyncOnMain {
-        await openApplication(identifier: input.identifier, background: background)
+      guard
+        let opened: Swift.Result<AppInfo, AppError> = runAsyncOnMain({
+          await openApplication(identifier: input.identifier, background: background)
+        })
+      else {
+        return Envelope.failure(
+          .timeout,
+          "Timed out after \(Int(runAsyncOnMainDeadline))s waiting for the main thread while opening '\(input.identifier)'"
+        )
       }
       switch opened {
       case .failure(let error):
@@ -311,13 +348,13 @@ private struct ClickTool: Tool {
           (input.doubleClick == true)
           ? BackgroundDriver.shared.doubleClick(pid: pid, point: point, button: button)
           : BackgroundDriver.shared.click(pid: pid, point: point, button: button)
-        return serializeResult(result)
+        return serializeInputResult(result)
       } else {
         let result: InputResult =
           (input.doubleClick == true)
           ? MouseController.shared.doubleClick(at: point, button: button)
           : MouseController.shared.click(at: point, button: button)
-        return serializeResult(result)
+        return serializeInputResult(result)
       }
     }
   }
@@ -345,7 +382,7 @@ private struct ClickElementTool: Tool {
       } else {
         result = ElementInteraction.shared.clickElement(id: input.id)
       }
-      return serializeResult(result)
+      return serializeActionResult(result)
     }
   }
 }
@@ -366,6 +403,8 @@ private struct TypeTextTool: Tool {
   func run(args: String) -> String {
     withArgs(args, expecting: "'text' field") { (input: Args) in
       // Resolve target pid: explicit > derived from element id > most recent.
+      // The most-recent fallback is kept for compatibility, but the resolved
+      // pid/app is echoed in the result so misrouting is observable.
       let resolvedPid: Int32? =
         input.pid
         ?? input.id.flatMap { AccessibilityManager.shared.pid(for: $0) }
@@ -374,7 +413,7 @@ private struct TypeTextTool: Tool {
       if let elementId = input.id {
         let focusResult = ElementInteraction.shared.focusElement(id: elementId)
         if !focusResult.success {
-          return serializeResult(focusResult)
+          return serializeActionResult(focusResult)
         }
         if input.replace ?? true {
           // Best-effort clear; some fields aren't AX-clearable, in which case
@@ -383,17 +422,22 @@ private struct TypeTextTool: Tool {
         }
       }
 
-      let result: InputResult
-      if let pid = resolvedPid {
-        result = BackgroundDriver.shared.type(pid: pid, text: input.text)
-      } else {
-        result = KeyboardController.shared.type(text: input.text)
+      guard let pid = resolvedPid else {
+        return Envelope.failure(
+          .invalidArgs,
+          "No target pid available. Pass 'pid' or an element 'id', or observe an app first "
+            + "(open_application / get_ui_elements) so a recent pid exists.")
       }
+
+      let result = BackgroundDriver.shared.type(pid: pid, text: input.text)
       if result.success {
-        let delta = resolvedPid.flatMap { computeFocusDelta(pid: $0) }
-        return serializeResult(ElementActionResult.ok(delta: delta))
+        return serializeResult(
+          ElementActionResult.ok(
+            delta: computeFocusDelta(pid: pid), pid: pid, app: appName(for: pid),
+            route: BackgroundDriver.shared.lastRoute))
       }
-      return serializeResult(ElementActionResult.fail(result.error ?? "Type failed"))
+      return serializeActionResult(
+        ElementActionResult.fail(result.error ?? "Type failed", pid: pid, app: appName(for: pid)))
     }
   }
 }
@@ -413,18 +457,27 @@ private struct PressKeyTool: Tool {
   func run(args: String) -> String {
     withArgs(args, expecting: "'key' field") { (input: Args) in
       let flags = parseModifierFlags(input.modifiers)
-      let resolvedPid = input.pid ?? AccessibilityManager.shared.mostRecentPid()
-      let result: InputResult
-      if let pid = resolvedPid, let code = keyCode(for: input.key) {
-        result = BackgroundDriver.shared.pressKey(pid: pid, keyCode: code, modifiers: flags)
-      } else {
-        result = KeyboardController.shared.pressKey(keyName: input.key, modifiers: flags)
+      guard let code = keyCode(for: input.key) else {
+        return Envelope.failure(.invalidArgs, "Unknown key: \(input.key)")
       }
+      // Explicit pid wins; otherwise fall back to the most recent snapshot's
+      // pid, echoing the resolved pid/app so misrouting is observable.
+      guard let pid = input.pid ?? AccessibilityManager.shared.mostRecentPid() else {
+        return Envelope.failure(
+          .invalidArgs,
+          "No target pid available. Pass 'pid', or observe an app first "
+            + "(open_application / get_ui_elements) so a recent pid exists.")
+      }
+      let result = BackgroundDriver.shared.pressKey(pid: pid, keyCode: code, modifiers: flags)
       if result.success {
-        let delta = resolvedPid.flatMap { computeFocusDelta(pid: $0) }
-        return serializeResult(ElementActionResult.ok(delta: delta))
+        return serializeResult(
+          ElementActionResult.ok(
+            delta: computeFocusDelta(pid: pid), pid: pid, app: appName(for: pid),
+            route: BackgroundDriver.shared.lastRoute))
       }
-      return serializeResult(ElementActionResult.fail(result.error ?? "Press key failed"))
+      return serializeActionResult(
+        ElementActionResult.fail(
+          result.error ?? "Press key failed", pid: pid, app: appName(for: pid)))
     }
   }
 }
@@ -461,13 +514,13 @@ private struct ScrollTool: Tool {
       if let pid = input.pid {
         let result = BackgroundDriver.shared.scroll(
           pid: pid, direction: direction, amount: input.amount ?? 3)
-        return serializeResult(result)
+        return serializeInputResult(result)
       } else {
         if let x = input.x, let y = input.y {
           _ = MouseController.shared.moveTo(CGPoint(x: x, y: y))
         }
         let result = MouseController.shared.scroll(direction: direction, amount: input.amount ?? 3)
-        return serializeResult(result)
+        return serializeInputResult(result)
       }
     }
   }
@@ -486,7 +539,7 @@ private struct SetValueTool: Tool {
 
   func run(args: String) -> String {
     withArgs(args, expecting: "'id' (string) and 'value' fields") { (input: Args) in
-      return serializeResult(
+      return serializeActionResult(
         ElementInteraction.shared.setElementValue(id: input.id, value: input.value))
     }
   }
@@ -504,7 +557,7 @@ private struct ClearFieldTool: Tool {
 
   func run(args: String) -> String {
     withArgs(args, expecting: "'id' field (string, e.g. 's1-5')") { (input: Args) in
-      return serializeResult(ElementInteraction.shared.clearElement(id: input.id))
+      return serializeActionResult(ElementInteraction.shared.clearElement(id: input.id))
     }
   }
 }
@@ -532,10 +585,10 @@ private struct DragTool: Tool {
       // route per-pid when we can (saves cross-app interference) but the
       // HID tap still fires for each step.
       if let pid = input.pid {
-        return serializeResult(
+        return serializeInputResult(
           BackgroundDriver.shared.drag(pid: pid, from: start, to: end))
       }
-      return serializeResult(MouseController.shared.drag(from: start, to: end))
+      return serializeInputResult(MouseController.shared.drag(from: start, to: end))
     }
   }
 }
@@ -562,7 +615,11 @@ private struct TakeScreenshotTool: Tool {
     {
       options = parsed
     }
-    return serializeResult(ScreenshotController.shared.capture(options: options))
+    let result = ScreenshotController.shared.capture(options: options)
+    if let failure = result.failure {
+      return Envelope.failure(failure.kind, failure.message)
+    }
+    return serializeResult(result)
   }
 }
 
@@ -623,6 +680,15 @@ private struct ActAndObserveTool: Tool {
       .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
 
     let actionJSON = tool.run(args: subPayload)
+    // Failed sub-actions now surface as canonical failure envelopes; pass
+    // them through untouched so the failure stays host-visible instead of
+    // being re-wrapped inside a successful CombinedResult.
+    if let d = actionJSON.data(using: .utf8),
+      let obj = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
+      obj["ok"] as? Bool == false
+    {
+      return actionJSON
+    }
     let actionResult: ElementActionResult = {
       guard let d = actionJSON.data(using: .utf8),
         let parsed = try? JSONDecoder().decode(ElementActionResult.self, from: d)
@@ -683,12 +749,20 @@ private struct SessionResult: Encodable {
   let stepIndex: Int?
   let totalSteps: Int?
   let narration: String?
+  /// Agent scope holding this session record ("global" or the agent uuid).
+  let agentScope: String
+
+  private enum CodingKeys: String, CodingKey {
+    case success, title, isActive, isCancelled, stepIndex, totalSteps, narration
+    case agentScope = "agent_scope"
+  }
 
   static func current(success: Bool = true) -> SessionResult {
     let s = AutomationSession.shared.currentState()
     return SessionResult(
       success: success, title: s.title, isActive: s.isActive, isCancelled: s.isCancelled,
-      stepIndex: s.stepIndex, totalSteps: s.totalSteps, narration: s.narration)
+      stepIndex: s.stepIndex, totalSteps: s.totalSteps, narration: s.narration,
+      agentScope: AgentScope.currentKey())
   }
 }
 
@@ -780,63 +854,37 @@ private let toolRegistry: [String: Tool] = {
 }()
 
 // MARK: - C ABI Surface
-
-private typealias osr_plugin_ctx_t = UnsafeMutableRawPointer
-
-private typealias osr_free_string_t = @convention(c) (UnsafePointer<CChar>?) -> Void
-private typealias osr_init_t = @convention(c) () -> osr_plugin_ctx_t?
-private typealias osr_destroy_t = @convention(c) (osr_plugin_ctx_t?) -> Void
-private typealias osr_get_manifest_t = @convention(c) (osr_plugin_ctx_t?) -> UnsafePointer<CChar>?
-private typealias osr_invoke_t =
-  @convention(c) (
-    osr_plugin_ctx_t?,
-    UnsafePointer<CChar>?,
-    UnsafePointer<CChar>?,
-    UnsafePointer<CChar>?
-  ) -> UnsafePointer<CChar>?
-
-private struct osr_plugin_api {
-  var free_string: osr_free_string_t?
-  var `init`: osr_init_t?
-  var destroy: osr_destroy_t?
-  var get_manifest: osr_get_manifest_t?
-  var invoke: osr_invoke_t?
-}
+//
+// The API table and both entry points are built with the SDK's PluginEntry
+// helpers. The v1 entry is kept exactly as before for old hosts; v2+ hosts
+// try `osaurus_plugin_entry_v2` first, which captures the injected host API
+// into `HostBridge.shared` so invoke frames can read the active agent id
+// (ABI v4+) for per-agent GUI-state scoping.
 
 /// Opaque handle the host uses to reference the plugin. Currently empty —
 /// state lives in the singletons (`AutomationSession`, `AccessibilityManager`).
 private final class PluginContext {}
 
-private func makeCString(_ s: String) -> UnsafePointer<CChar>? {
-  guard let ptr = strdup(s) else { return nil }
-  return UnsafePointer(ptr)
-}
-
 // MARK: - API Implementation
 
-nonisolated(unsafe) private var api: osr_plugin_api = {
-  var api = osr_plugin_api()
-
-  api.free_string = { ptr in
-    if let p = ptr { free(UnsafeMutableRawPointer(mutating: p)) }
-  }
-
-  api.`init` = {
+nonisolated(unsafe) private var api = PluginEntry.makeAPI(
+  version: OsrABIVersion.v2,
+  init: {
     Unmanaged.passRetained(PluginContext()).toOpaque()
-  }
-
-  api.destroy = { ctxPtr in
+  },
+  destroy: { ctxPtr in
+    // Destroy runs outside any per-agent frame, so this ends the global
+    // scope's session (wave-1 parity). Per-agent session records simply
+    // die with the process — the whole plugin is being unloaded.
     AutomationSession.shared.endSession(reason: "plugin destroyed")
     if let ctxPtr = ctxPtr {
       Unmanaged<PluginContext>.fromOpaque(ctxPtr).release()
     }
-  }
-
-  api.get_manifest = { _ in
-    makeCString(PluginManifest.json)
-  }
-
-  api.invoke = { _, typePtr, idPtr, payloadPtr in
+  },
+  getManifest: { _ in
+    osrMakeCString(PluginManifest.json)
+  },
+  invoke: { _, typePtr, idPtr, payloadPtr in
     guard let typePtr = typePtr, let idPtr = idPtr, let payloadPtr = payloadPtr else {
       return nil
     }
@@ -845,21 +893,31 @@ nonisolated(unsafe) private var api: osr_plugin_api = {
     let payload = String(cString: payloadPtr)
 
     guard type == "tool" else {
-      return makeCString(
+      return osrMakeCString(
         Envelope.failure(.invalidArgs, "Unknown capability type: \(type)"))
     }
     guard let tool = toolRegistry[id] else {
-      return makeCString(Envelope.failure(.notFound, "Unknown tool: \(id)"))
+      return osrMakeCString(Envelope.failure(.notFound, "Unknown tool: \(id)"))
     }
-    return makeCString(tool.run(args: payload))
+    // Resolve the active agent id ONCE per invoke frame (non-nil only on
+    // ABI v4+ hosts inside a per-agent frame) and pin it for the duration
+    // of the call so element-cache / recent-pid / session state is scoped
+    // to that agent. Nil pins the "global" scope (wave-1 behavior).
+    let agentId = HostBridge.shared.activeAgentId()
+    return AgentScope.withScope(agentId) {
+      osrMakeCString(tool.run(args: payload))
+    }
   }
+)
 
-  return api
-}()
+// MARK: - Plugin Entry Points
 
-// MARK: - Plugin Entry Point
+@_cdecl("osaurus_plugin_entry_v2")
+public func osaurus_plugin_entry_v2(_ host: UnsafeRawPointer?) -> UnsafeRawPointer? {
+  return PluginEntry.enterV2(host, api: &api)
+}
 
 @_cdecl("osaurus_plugin_entry")
 public func osaurus_plugin_entry() -> UnsafeRawPointer? {
-  return UnsafeRawPointer(&api)
+  return PluginEntry.enterV1(api: &api)
 }

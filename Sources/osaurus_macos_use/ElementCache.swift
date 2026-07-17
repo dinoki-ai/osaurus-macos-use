@@ -19,17 +19,42 @@ struct ElementActionResult: Codable {
   /// True when the user pressed Esc to cancel the in-flight automation. Agent
   /// MUST stop and surface the cancellation to the user; do not retry.
   let cancelled: Bool?
+  /// True when the failure is a deterministic caller error (e.g. malformed id).
+  /// Drives the invalid_args classification at the invoke boundary.
+  let invalidArgs: Bool?
   /// A small "what changed" record for successful actions on a known pid.
   let delta: FocusDelta?
+  /// The pid the action was actually routed to, so implicit-PID routing
+  /// (most-recent snapshot fallback) is observable by the agent.
+  let pid: Int32?
+  /// Localized app name for `pid`, when resolvable.
+  let app: String?
+  /// The transport the background driver last used for this action.
+  let route: InputRoute?
+  /// The agent scope whose element-cache / recent-pid state served this
+  /// action: the agent's uuid on ABI v4+ hosts, "global" otherwise. Makes
+  /// cross-agent misrouting observable alongside pid/app/route.
+  let agentScope: String?
 
-  static func ok(delta: FocusDelta? = nil) -> ElementActionResult {
-    return ElementActionResult(
-      success: true, error: nil, stale: nil, removed: nil, cancelled: nil, delta: delta)
+  private enum CodingKeys: String, CodingKey {
+    case success, error, stale, removed, cancelled, invalidArgs, delta, pid, app, route
+    case agentScope = "agent_scope"
   }
 
-  static func fail(_ message: String) -> ElementActionResult {
+  static func ok(
+    delta: FocusDelta? = nil, pid: Int32? = nil, app: String? = nil, route: InputRoute? = nil
+  ) -> ElementActionResult {
     return ElementActionResult(
-      success: false, error: message, stale: nil, removed: nil, cancelled: nil, delta: nil)
+      success: true, error: nil, stale: nil, removed: nil, cancelled: nil, invalidArgs: nil,
+      delta: delta, pid: pid, app: app, route: route, agentScope: AgentScope.currentKey())
+  }
+
+  static func fail(_ message: String, pid: Int32? = nil, app: String? = nil)
+    -> ElementActionResult
+  {
+    return ElementActionResult(
+      success: false, error: message, stale: nil, removed: nil, cancelled: nil, invalidArgs: nil,
+      delta: nil, pid: pid, app: app, route: nil, agentScope: AgentScope.currentKey())
   }
 
   static func stale(requested: Int, current: Int) -> ElementActionResult {
@@ -37,7 +62,8 @@ struct ElementActionResult: Codable {
       "Element id is from snapshot s\(requested) but the current snapshot is s\(current). "
       + "Call get_ui_elements (or find_elements) again, then retry with the fresh id."
     return ElementActionResult(
-      success: false, error: msg, stale: true, removed: nil, cancelled: nil, delta: nil)
+      success: false, error: msg, stale: true, removed: nil, cancelled: nil, invalidArgs: nil,
+      delta: nil, pid: nil, app: nil, route: nil, agentScope: AgentScope.currentKey())
   }
 
   static func removed(_ id: String) -> ElementActionResult {
@@ -45,13 +71,17 @@ struct ElementActionResult: Codable {
       "Element \(id) no longer exists in the UI (it may have been removed, or the view changed). "
       + "Re-observe to find the current element."
     return ElementActionResult(
-      success: false, error: msg, stale: nil, removed: true, cancelled: nil, delta: nil)
+      success: false, error: msg, stale: nil, removed: true, cancelled: nil, invalidArgs: nil,
+      delta: nil, pid: nil, app: nil, route: nil, agentScope: AgentScope.currentKey())
   }
 
   static func malformed(_ id: String) -> ElementActionResult {
-    return .fail(
+    let msg =
       "Element id '\(id)' is not a valid snapshot id. Expected format 's<snapshot>-<n>' "
-        + "as returned by get_ui_elements or find_elements.")
+      + "as returned by get_ui_elements or find_elements."
+    return ElementActionResult(
+      success: false, error: msg, stale: nil, removed: nil, cancelled: nil, invalidArgs: true,
+      delta: nil, pid: nil, app: nil, route: nil, agentScope: AgentScope.currentKey())
   }
 
   /// User pressed Esc to abort the automation session. Agent should stop.
@@ -59,7 +89,8 @@ struct ElementActionResult: Codable {
     return ElementActionResult(
       success: false,
       error: "Cancelled by user (Esc was pressed during the automation).",
-      stale: nil, removed: nil, cancelled: true, delta: nil
+      stale: nil, removed: nil, cancelled: true, invalidArgs: nil,
+      delta: nil, pid: nil, app: nil, route: nil, agentScope: AgentScope.currentKey()
     )
   }
 }

@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import OsaurusPluginKit
 
 // MARK: - MCP ImageContent (used within content array)
 
@@ -23,23 +24,32 @@ struct ScreenshotResult: Encodable {
   /// MCP content array - contains ImageContent or TextContent items
   let content: [AnyCodable]
 
+  /// Set on failures so the invoke boundary can emit a canonical failure
+  /// envelope instead of a host-visible "success" containing error text.
+  /// Not encoded — the success payload shape is unchanged.
+  let failure: (kind: Envelope.Kind, message: String)?
+
+  private enum CodingKeys: String, CodingKey {
+    case content
+  }
+
   /// Creates a successful image result in MCP format
   static func ok(width: Int, height: Int, data: String, mimeType: String) -> ScreenshotResult {
     let imageContent = MCPImageContent(type: "image", data: data, mimeType: mimeType)
-    return ScreenshotResult(content: [AnyCodable(imageContent)])
+    return ScreenshotResult(content: [AnyCodable(imageContent)], failure: nil)
   }
 
   /// Creates a successful file path result
   static func okWithPath(width: Int, height: Int, path: String) -> ScreenshotResult {
     let textContent = MCPTextContent(
       type: "text", text: "Screenshot saved to: \(path) (\(width)x\(height))")
-    return ScreenshotResult(content: [AnyCodable(textContent)])
+    return ScreenshotResult(content: [AnyCodable(textContent)], failure: nil)
   }
 
   /// Creates an error result
-  static func fail(_ message: String) -> ScreenshotResult {
+  static func fail(_ message: String, kind: Envelope.Kind = .executionError) -> ScreenshotResult {
     let textContent = MCPTextContent(type: "text", text: "Error: \(message)")
-    return ScreenshotResult(content: [AnyCodable(textContent)])
+    return ScreenshotResult(content: [AnyCodable(textContent)], failure: (kind, message))
   }
 }
 
@@ -95,6 +105,70 @@ struct ScreenshotOptions: Decodable {
   /// Useful for vision-augmented agents to reference IDs straight from the image.
   /// Requires `pid` to be set, and that get_ui_elements has been called for that pid.
   var annotate: Bool?
+}
+
+// MARK: - Save Path Policy
+//
+// `savePath` used to be written verbatim, letting a caller overwrite any
+// user-writable file (~/.ssh/authorized_keys, ~/Library/LaunchAgents/...).
+// Canonicalization and containment now come from the SDK's `PathSafety`
+// (symlinks resolved on the deepest existing ancestor, component-aware
+// prefix check); this policy layers the plugin-specific rules on top:
+//   - Path must be absolute (after tilde expansion).
+//   - Must live inside the user's home or the temporary directory.
+//   - Inside home, every component below home must not start with "." —
+//     this blocks dotfile config dirs like ~/.ssh and ~/.config.
+//   - The parent directory must already exist (we never create directories).
+//   - When `savePath` is omitted the screenshot is returned as base64, so
+//     nothing is ever written by default.
+enum ScreenshotSavePathPolicy {
+  enum Verdict: Equatable {
+    case allowed(canonicalPath: String)
+    case rejected(reason: String)
+  }
+
+  static func validate(
+    _ rawPath: String,
+    home: String = NSHomeDirectory(),
+    tmp: String = NSTemporaryDirectory()
+  ) -> Verdict {
+    let expanded = (rawPath as NSString).expandingTildeInPath
+    guard expanded.hasPrefix("/") else {
+      return .rejected(reason: "savePath must be an absolute path")
+    }
+    let canonical = PathSafety.canonicalize(expanded)
+    let canonicalHome = PathSafety.canonicalize(home)
+
+    if PathSafety.isContained(canonical, in: tmp) {
+      return checkParentAndFinish(canonical)
+    }
+    guard PathSafety.isContained(canonical, in: canonicalHome) else {
+      return .rejected(
+        reason:
+          "savePath must be inside your home directory or the temporary directory (got '\(canonical)')"
+      )
+    }
+    let relative = String(canonical.dropFirst(canonicalHome.count)).split(separator: "/")
+    for component in relative where component.hasPrefix(".") {
+      return .rejected(
+        reason:
+          "savePath may not target hidden/config directories or files (component '\(component)')")
+    }
+    return checkParentAndFinish(canonical)
+  }
+
+  private static func checkParentAndFinish(_ canonical: String) -> Verdict {
+    var isDir: ObjCBool = false
+    if FileManager.default.fileExists(atPath: canonical, isDirectory: &isDir), isDir.boolValue {
+      return .rejected(reason: "savePath is an existing directory")
+    }
+    let parent = (canonical as NSString).deletingLastPathComponent
+    guard FileManager.default.fileExists(atPath: parent, isDirectory: &isDir), isDir.boolValue
+    else {
+      return .rejected(reason: "savePath parent directory does not exist: '\(parent)'")
+    }
+    return .allowed(canonicalPath: canonical)
+  }
 }
 
 // MARK: - Display Info
@@ -214,16 +288,20 @@ final class ScreenshotController: @unchecked Sendable {
 
     // Save to file if path is specified
     if let savePath = options.savePath {
-      let url = URL(fileURLWithPath: savePath)
-      do {
-        try data.write(to: url)
-        return .okWithPath(
-          width: finalImage.width,
-          height: finalImage.height,
-          path: savePath
-        )
-      } catch {
-        return .fail("Failed to save screenshot: \(error.localizedDescription)")
+      switch ScreenshotSavePathPolicy.validate(savePath) {
+      case .rejected(let reason):
+        return .fail("Invalid savePath: \(reason)", kind: .invalidArgs)
+      case .allowed(let canonicalPath):
+        do {
+          try PathSafety.atomicWrite(data: data, to: canonicalPath)
+          return .okWithPath(
+            width: finalImage.width,
+            height: finalImage.height,
+            path: canonicalPath
+          )
+        } catch {
+          return .fail("Failed to save screenshot: \(error.localizedDescription)")
+        }
       }
     }
 
