@@ -163,6 +163,9 @@ struct AgentScopeIsolationTests {
 
   @Test("invoke boundary picks up the agent id from a v4 host")
   func invokeUsesHostAgentId() throws {
+    hostBridgeTestLock.lock()
+    defer { hostBridgeTestLock.unlock() }
+
     var host = OsrHostAPI(
       version: OsrABIVersion.v4,
       get_active_agent_id: mockGetActiveAgentId
@@ -208,6 +211,12 @@ struct AgentScopeIsolationTests {
 // `get_active_agent_id` is a C function pointer: it cannot capture state,
 // so the mock uuid lives in file-scope constants. The bridge frees the
 // returned string via libc free() on pre-v6 hosts, pairing with strdup.
+
+/// Serializes every test that installs/uninstalls `HostBridge.shared`
+/// (this file's mock-host test and the v2 entry conformance test).
+/// Suites run in parallel, so without this the uninstall in one test
+/// could race the mock window in the other.
+let hostBridgeTestLock = NSLock()
 
 private let mockAgentUUID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301"
 
