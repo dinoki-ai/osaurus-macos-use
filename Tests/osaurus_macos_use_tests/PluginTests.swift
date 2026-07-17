@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import OsaurusPluginKit
 import Testing
 
 @testable import osaurus_macos_use
@@ -1295,10 +1296,12 @@ struct EnvelopeTests {
       return obj["retryable"] as! Bool
     }
     // Deterministic validation failures must never be marked retryable.
+    // Wave 2: the SDK's canonical kind set replaces the (unused) local
+    // `unavailable` kind with `permission_denied`, which is non-retryable.
     #expect(try retryable(.invalidArgs) == false)
     #expect(try retryable(.notFound) == false)
+    #expect(try retryable(.permissionDenied) == false)
     #expect(try retryable(.executionError) == true)
-    #expect(try retryable(.unavailable) == true)
     #expect(try retryable(.timeout) == true)
   }
 

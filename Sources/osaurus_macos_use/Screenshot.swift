@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import OsaurusPluginKit
 
 // MARK: - MCP ImageContent (used within content array)
 
@@ -110,10 +111,10 @@ struct ScreenshotOptions: Decodable {
 //
 // `savePath` used to be written verbatim, letting a caller overwrite any
 // user-writable file (~/.ssh/authorized_keys, ~/Library/LaunchAgents/...).
-// Policy now:
+// Canonicalization and containment now come from the SDK's `PathSafety`
+// (symlinks resolved on the deepest existing ancestor, component-aware
+// prefix check); this policy layers the plugin-specific rules on top:
 //   - Path must be absolute (after tilde expansion).
-//   - Canonicalized (symlinks resolved on the deepest existing ancestor)
-//     before checking, so symlink/`..` tricks can't escape.
 //   - Must live inside the user's home or the temporary directory.
 //   - Inside home, every component below home must not start with "." —
 //     this blocks dotfile config dirs like ~/.ssh and ~/.config.
@@ -126,38 +127,6 @@ enum ScreenshotSavePathPolicy {
     case rejected(reason: String)
   }
 
-  /// Canonicalize a path that may not exist yet: resolve symlinks on the
-  /// deepest existing ancestor, then re-append the remaining components.
-  static func canonicalize(_ path: String) -> String {
-    let standardized = URL(fileURLWithPath: path).standardizedFileURL
-    let components = standardized.pathComponents
-    var existing = "/"
-    var idx = 1
-    while idx < components.count {
-      let candidate = (existing as NSString).appendingPathComponent(components[idx])
-      var isSymlink = false
-      if let attrs = try? FileManager.default.attributesOfItem(atPath: candidate),
-        attrs[.type] as? FileAttributeType == .typeSymbolicLink
-      {
-        isSymlink = true
-      }
-      if !isSymlink && !FileManager.default.fileExists(atPath: candidate) { break }
-      existing = candidate
-      idx += 1
-    }
-    var result = URL(fileURLWithPath: existing).resolvingSymlinksInPath().path
-    while idx < components.count {
-      result = (result as NSString).appendingPathComponent(components[idx])
-      idx += 1
-    }
-    return result
-  }
-
-  private static func isContained(_ path: String, in root: String) -> Bool {
-    let r = URL(fileURLWithPath: root).standardizedFileURL.resolvingSymlinksInPath().path
-    return path == r || path.hasPrefix(r.hasSuffix("/") ? r : r + "/")
-  }
-
   static func validate(
     _ rawPath: String,
     home: String = NSHomeDirectory(),
@@ -167,14 +136,13 @@ enum ScreenshotSavePathPolicy {
     guard expanded.hasPrefix("/") else {
       return .rejected(reason: "savePath must be an absolute path")
     }
-    let canonical = canonicalize(expanded)
-    let canonicalHome = URL(fileURLWithPath: home).standardizedFileURL
-      .resolvingSymlinksInPath().path
+    let canonical = PathSafety.canonicalize(expanded)
+    let canonicalHome = PathSafety.canonicalize(home)
 
-    if isContained(canonical, in: tmp) {
+    if PathSafety.isContained(canonical, in: tmp) {
       return checkParentAndFinish(canonical)
     }
-    guard isContained(canonical, in: canonicalHome) else {
+    guard PathSafety.isContained(canonical, in: canonicalHome) else {
       return .rejected(
         reason:
           "savePath must be inside your home directory or the temporary directory (got '\(canonical)')"
@@ -325,7 +293,7 @@ final class ScreenshotController: @unchecked Sendable {
         return .fail("Invalid savePath: \(reason)", kind: .invalidArgs)
       case .allowed(let canonicalPath):
         do {
-          try data.write(to: URL(fileURLWithPath: canonicalPath), options: .atomic)
+          try PathSafety.atomicWrite(data: data, to: canonicalPath)
           return .okWithPath(
             width: finalImage.width,
             height: finalImage.height,

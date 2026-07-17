@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import OsaurusPluginKit
 
 // MARK: - JSON Helpers
 
