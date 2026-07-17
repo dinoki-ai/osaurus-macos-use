@@ -34,17 +34,27 @@ private func withArgs<Args: Decodable>(
 
 // MARK: - Async Runner Helpers
 
-private func runAsyncOnMain<T: Sendable>(_ block: @escaping @MainActor @Sendable () async -> T) -> T
-{
+/// Maximum time a main-actor hop may block the invoke thread. A wedged main
+/// thread (or a block that never completes) previously hung the host forever.
+private let runAsyncOnMainDeadline: TimeInterval = 15
+
+/// Run an async main-actor block synchronously, bounded by a deadline.
+/// Returns nil when the deadline elapses; callers must map that to a
+/// canonical timeout failure. Never force-unwraps after a timed-out wait.
+private func runAsyncOnMain<T: Sendable>(
+  _ block: @escaping @MainActor @Sendable () async -> T
+) -> T? {
   let semaphore = DispatchSemaphore(value: 0)
-  nonisolated(unsafe) var result: T!
+  nonisolated(unsafe) var result: T?
 
   Task { @MainActor in
     result = await block()
     semaphore.signal()
   }
 
-  semaphore.wait()
+  guard semaphore.wait(timeout: .now() + runAsyncOnMainDeadline) == .success else {
+    return nil
+  }
   return result
 }
 
@@ -106,8 +116,15 @@ private struct OpenApplicationTool: Tool {
   func run(args: String) -> String {
     withArgs(args, expecting: "'identifier' field") { (input: Args) in
       let background = input.background ?? true
-      let opened: Swift.Result<AppInfo, AppError> = runAsyncOnMain {
-        await openApplication(identifier: input.identifier, background: background)
+      guard
+        let opened: Swift.Result<AppInfo, AppError> = runAsyncOnMain({
+          await openApplication(identifier: input.identifier, background: background)
+        })
+      else {
+        return Envelope.failure(
+          .timeout,
+          "Timed out after \(Int(runAsyncOnMainDeadline))s waiting for the main thread while opening '\(input.identifier)'"
+        )
       }
       switch opened {
       case .failure(let error):
