@@ -10,6 +10,7 @@ enum PluginManifest {
   static let json: String = """
     {
       "plugin_id": "osaurus.macos-use",
+      "version": "3.0.4",
       "name": "macOS Use",
       "description": "Backgrounded computer-use driver for macOS. Cursor never moves, focus never changes, Spaces never follow. Routes input via SkyLight + per-pid CGEvent channels (cua-driver recipe) so the agent can drive any Mac app while the user keeps working in the foreground. Workflow: list_apps OR open_application -> list_windows -> get_ui_elements (default mode='som' returns AX tree + screenshot + element_index) -> click_element/set_value/type_text by snapshot id -> if 'stale: true' is returned, observe again. Pass `pid` to action tools (or rely on the most-recent snapshot's pid) so input lands in the right app without warping the cursor.",
       "license": "MIT",

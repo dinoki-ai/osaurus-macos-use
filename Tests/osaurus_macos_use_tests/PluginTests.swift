@@ -150,6 +150,9 @@ struct ManifestTests {
     #expect(json["plugin_id"] as? String == "osaurus.macos-use")
     #expect(json["name"] as? String == "macOS Use")
     #expect(json["min_macos"] as? String == "13.0")
+    // The release workflow's manifest conformance check requires a non-empty
+    // `version` matching the tag — guard against shipping it blank again.
+    #expect((json["version"] as? String)?.isEmpty == false)
   }
 
   @Test("Manifest contains exactly 20 tools")
