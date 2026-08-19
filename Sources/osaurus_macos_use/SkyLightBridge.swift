@@ -28,7 +28,24 @@ struct PSN {
 // they're not Objective-C-representable. We use opaque raw pointers in the
 // function-pointer typealiases and rebind to `PSN` at the call site instead.
 
+// `CGError SLEventPostToPid(CGEventRef event, pid_t pid)` on macOS up to 26.3.
+// macOS 26.4 changed this private entry point's argument handling: the same
+// call that worked for years now segfaults deep inside SkyLight
+// (`SLEventPostToPid` → `SLEventPostToPSN` → EXC_BAD_ACCESS at a tiny address)
+// on the very first post. It reliably crashed the host app whenever computer
+// use typed or pressed a key into a target on 26.4+. So on 26.4+ we skip this
+// primitive and post through `SLEventPostToPSN` directly (see below), which is
+// the SkyLight entry point `SLEventPostToPid` itself bottoms out in — the crash
+// was `SLEventPostToPid` forwarding a garbage event pointer into it, not the
+// PSN call being unsafe on its own.
 private typealias SLEventPostToPidFn = @convention(c) (CGEvent, pid_t) -> Int32
+
+// `CGError SLEventPostToPSN(const ProcessSerialNumber *psn, CGEventRef event)`
+// — the primitive `SLEventPostToPid` bottoms out in. PSN pointer first, event
+// second, mirroring the public `CGEventPostToPSN`. On macOS 26.4+ we address
+// the target by PSN and call this directly so backgrounded input (Chromium
+// included) keeps working without going through the crashing `SLEventPostToPid`.
+private typealias SLEventPostToPSNFn = @convention(c) (UnsafeRawPointer, CGEvent) -> Int32
 
 private typealias SLPSPostEventRecordToFn =
   @convention(c) (
@@ -57,7 +74,20 @@ enum SkyLightBridge {
 
   private static let symbols: ResolvedSymbols = ResolvedSymbols.load()
 
-  static var isAvailable: Bool { symbols.eventPostToPid != nil }
+  /// macOS 26.4 broke the `SLEventPostToPid` post path: calling it segfaults
+  /// inside SkyLight (see the typealias comment). On 26.4+ we post via
+  /// `SLEventPostToPSN` instead, addressing the target by PSN; the version gate
+  /// keeps the battle-tested `SLEventPostToPid` path untouched on everything older.
+  private static let usesPSNPath: Bool = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+    OperatingSystemVersion(majorVersion: 26, minorVersion: 4, patchVersion: 0)
+  )
+
+  static var isAvailable: Bool {
+    if usesPSNPath {
+      return symbols.eventPostToPSN != nil && symbols.getProcessForPID != nil
+    }
+    return symbols.eventPostToPid != nil
+  }
   static var canFocusWithoutRaise: Bool {
     symbols.postEventRecordTo != nil && symbols.getFrontProcess != nil
       && symbols.getProcessForPID != nil
@@ -73,10 +103,24 @@ enum SkyLightBridge {
   /// Callers must treat `false` as "fall back to a different transport".
   @discardableResult
   static func postEvent(_ event: CGEvent, toPid pid: pid_t) -> Bool {
-    guard let fn = symbols.eventPostToPid else { return false }
     // Same WindowServer-knowability guard as processSerialNumber. Avoids
     // segfaults inside the private function when targeting a CLI process.
     guard isWindowServerVisible(pid: pid) else { return false }
+
+    // macOS 26.4+: `SLEventPostToPid` segfaults, so address the target by PSN
+    // and post through `SLEventPostToPSN` directly. `processSerialNumber`
+    // already gates on `kill(pid, 0)` + a WindowServer-visibility check, so we
+    // never hand the private function a stale or CLI-only pid.
+    if usesPSNPath {
+      guard let fn = symbols.eventPostToPSN,
+        var psn = processSerialNumber(forPid: pid)
+      else { return false }
+      return withUnsafePointer(to: &psn) { ptr -> Int32 in
+        fn(UnsafeRawPointer(ptr), event)
+      } == 0
+    }
+
+    guard let fn = symbols.eventPostToPid else { return false }
     return fn(event, pid) == 0
   }
 
@@ -183,6 +227,7 @@ enum SkyLightBridge {
   /// Stored as a value type so we can keep it `let` and avoid locks.
   private struct ResolvedSymbols {
     let eventPostToPid: SLEventPostToPidFn?
+    let eventPostToPSN: SLEventPostToPSNFn?
     let postEventRecordTo: SLPSPostEventRecordToFn?
     let getFrontProcess: SLPSGetFrontProcessFn?
     let getProcessForPID: GetProcessForPIDFn?
@@ -220,6 +265,8 @@ enum SkyLightBridge {
 
       return ResolvedSymbols(
         eventPostToPid: loadFn(skyHandle, "SLEventPostToPid", as: SLEventPostToPidFn.self),
+        eventPostToPSN: loadFn(skyHandle, "SLEventPostToPSN", as: SLEventPostToPSNFn.self)
+          ?? loadFn(skyHandle, "_SLEventPostToPSN", as: SLEventPostToPSNFn.self),
         postEventRecordTo: loadFn(
           skyHandle, "SLPSPostEventRecordTo", as: SLPSPostEventRecordToFn.self)
           ?? loadFn(skyHandle, "_SLPSPostEventRecordTo", as: SLPSPostEventRecordToFn.self),

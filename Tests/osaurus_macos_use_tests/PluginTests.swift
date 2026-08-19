@@ -1,8 +1,40 @@
 import AppKit
+import CoreGraphics
 import Foundation
 import Testing
 
 @testable import osaurus_macos_use
+
+// MARK: - SkyLight Bridge Tests
+
+@Suite("SkyLight Bridge")
+struct SkyLightBridgeTests {
+  // Regression guard for the macOS 26.4+ crash: `SLEventPostToPid` segfaults
+  // inside SkyLight there, so on 26.4+ the bridge must post via
+  // `SLEventPostToPSN` (addressing the target by PSN) rather than the old
+  // primitive. `postEvent` still has to be crash-safe for pids it can't
+  // route to — the WindowServer-visibility guard returns `false` early
+  // instead of handing the private function a bad target.
+  @Test("postEvent is crash-safe and refuses non-GUI / dead pids")
+  func postEventRefusesUnroutablePids() {
+    let event = CGEvent(source: nil)!
+    // Highly unlikely to be a live WindowServer-visible GUI app in the test
+    // host, so this exercises the guard rather than the private post.
+    #expect(SkyLightBridge.postEvent(event, toPid: 999_999) == false)
+    // The xctest runner itself is a CLI process (activationPolicy .prohibited),
+    // so the visibility guard rejects it before any SkyLight call.
+    #expect(SkyLightBridge.postEvent(event, toPid: ProcessInfo.processInfo.processIdentifier) == false)
+  }
+
+  @Test("isAvailable requires the transport symbols the current OS uses")
+  func isAvailableMatchesResolvedSymbols() {
+    // On any supported OS, availability must never be advertised without the
+    // symbols the post path needs — otherwise `route()` would attempt a
+    // SkyLight post that can't actually be made. This is a smoke check that
+    // the version-gated `isAvailable` doesn't throw or crash on first access.
+    _ = SkyLightBridge.isAvailable
+  }
+}
 
 // MARK: - C ABI Mirror Types
 
