@@ -1,8 +1,8 @@
 # Changelog
 
-## 3.0.1 — Fix SkyLight crash on macOS 26.4+
+## 3.0.4 — Fix SkyLight crash on macOS 26.4+
 
-Computer use crashed the host app (`EXC_BAD_ACCESS` inside SkyLight) whenever it typed text or pressed a key into a target on macOS 26.4 and later. The private `SLEventPostToPid` post path the backgrounded driver relies on changed behavior on 26.4 and now segfaults on the first call. The bridge now reports unavailable on 26.4+, so the driver degrades to the public `CGEvent.postToPid` transport instead of crashing. Cursor still never moves; only Chromium web-content input loses the SkyLight-trusted path on affected OS versions (it falls back to per-pid delivery).
+Computer use crashed the host app (`EXC_BAD_ACCESS` inside SkyLight) whenever it typed text or pressed a key into a target on macOS 26.4 and later. The private `SLEventPostToPid` primitive the backgrounded driver relies on changed behavior on 26.4 and now segfaults on the first call (it forwards a garbage event pointer into `SLEventPostToPSN`). On 26.4+ the driver now addresses the target by PSN and posts through `SLEventPostToPSN` directly — the entry point `SLEventPostToPid` itself bottoms out in — so backgrounded input keeps working, Chromium included, with the cursor still never moving. Older macOS is untouched. If the PSN post can't be made, the driver falls back to `CGEvent.postToPid` as before.
 
 ## 3.0.0 — Backgrounded driver (cua recipe)
 
