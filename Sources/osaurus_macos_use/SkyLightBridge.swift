@@ -28,6 +28,14 @@ struct PSN {
 // they're not Objective-C-representable. We use opaque raw pointers in the
 // function-pointer typealiases and rebind to `PSN` at the call site instead.
 
+// `CGError SLEventPostToPid(CGEventRef event, pid_t pid)` on macOS up to 26.3.
+// macOS 26.4 changed this private entry point's argument handling: the same
+// call that worked for years now segfaults deep inside SkyLight
+// (`SLEventPostToPid` → `SLEventPostToPSN` → EXC_BAD_ACCESS at a tiny address)
+// on the very first post. It reliably crashed the host app whenever computer
+// use typed or pressed a key into a target on 26.4+. We can't safely call it
+// there, so `SkyLightBridge` reports unavailable on 26.4+ and the driver
+// degrades to the public `CGEvent.postToPid` path (see `SkyLightBridge.isAvailable`).
 private typealias SLEventPostToPidFn = @convention(c) (CGEvent, pid_t) -> Int32
 
 private typealias SLPSPostEventRecordToFn =
@@ -57,7 +65,16 @@ enum SkyLightBridge {
 
   private static let symbols: ResolvedSymbols = ResolvedSymbols.load()
 
-  static var isAvailable: Bool { symbols.eventPostToPid != nil }
+  /// macOS 26.4 broke the `SLEventPostToPid` post path: calling it segfaults
+  /// inside SkyLight (see the typealias comment). We can't post through
+  /// SkyLight there, so gate the whole transport off on 26.4+ and let callers
+  /// fall back to `CGEvent.postToPid`. `focusWithoutRaise` (which uses
+  /// different, still-safe symbols) is unaffected.
+  private static let postPathIsUnsafe: Bool = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+    OperatingSystemVersion(majorVersion: 26, minorVersion: 4, patchVersion: 0)
+  )
+
+  static var isAvailable: Bool { !postPathIsUnsafe && symbols.eventPostToPid != nil }
   static var canFocusWithoutRaise: Bool {
     symbols.postEventRecordTo != nil && symbols.getFrontProcess != nil
       && symbols.getProcessForPID != nil
@@ -73,7 +90,10 @@ enum SkyLightBridge {
   /// Callers must treat `false` as "fall back to a different transport".
   @discardableResult
   static func postEvent(_ event: CGEvent, toPid pid: pid_t) -> Bool {
-    guard let fn = symbols.eventPostToPid else { return false }
+    // The post path segfaults inside SkyLight on macOS 26.4+ (see
+    // `postPathIsUnsafe`). Never reach the symbol there; callers fall back to
+    // the public `CGEvent.postToPid` transport.
+    guard !postPathIsUnsafe, let fn = symbols.eventPostToPid else { return false }
     // Same WindowServer-knowability guard as processSerialNumber. Avoids
     // segfaults inside the private function when targeting a CLI process.
     guard isWindowServerVisible(pid: pid) else { return false }

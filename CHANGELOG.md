@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.0.1 — Fix SkyLight crash on macOS 26.4+
+
+Computer use crashed the host app (`EXC_BAD_ACCESS` inside SkyLight) whenever it typed text or pressed a key into a target on macOS 26.4 and later. The private `SLEventPostToPid` post path the backgrounded driver relies on changed behavior on 26.4 and now segfaults on the first call. The bridge now reports unavailable on 26.4+, so the driver degrades to the public `CGEvent.postToPid` transport instead of crashing. Cursor still never moves; only Chromium web-content input loses the SkyLight-trusted path on affected OS versions (it falls back to per-pid delivery).
+
 ## 3.0.0 — Backgrounded driver (cua recipe)
 
 A ground-up rework that turns the plugin from a foreground co-pilot into a fully **backgrounded** macOS driver. Inspired by the [cua-driver](https://github.com/trycua/cua/blob/main/blog/inside-macos-window-internals.md) write-up: the agent can now drive any Mac app while the user keeps working in the foreground — cursor never moves, focus never changes, Spaces never follow. Shipped alongside cua-style `ax` / `vision` / `som` capture modes and per-window addressing.

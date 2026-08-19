@@ -1,8 +1,31 @@
 import AppKit
+import CoreGraphics
 import Foundation
 import Testing
 
 @testable import osaurus_macos_use
+
+// MARK: - SkyLight Bridge Tests
+
+@Suite("SkyLight Bridge")
+struct SkyLightBridgeTests {
+  // Regression guard: `SLEventPostToPid` segfaults inside SkyLight on macOS
+  // 26.4+, so the bridge must never advertise its post path as available
+  // there — the driver has to degrade to `CGEvent.postToPid` instead of
+  // crashing the host app when computer use types or presses a key.
+  @Test("SkyLight post path is never advertised as available on macOS 26.4+")
+  func skyLightUnavailableOnAffectedOS() {
+    let is26_4OrLater = ProcessInfo.processInfo.isOperatingSystemAtLeast(
+      OperatingSystemVersion(majorVersion: 26, minorVersion: 4, patchVersion: 0)
+    )
+    guard is26_4OrLater else { return }
+    #expect(SkyLightBridge.isAvailable == false)
+    // The direct wrapper must also refuse to reach the crashing symbol.
+    let event = CGEvent(source: nil)!
+    #expect(
+      SkyLightBridge.postEvent(event, toPid: ProcessInfo.processInfo.processIdentifier) == false)
+  }
+}
 
 // MARK: - C ABI Mirror Types
 
